@@ -206,6 +206,24 @@ func TestPingOnceSkipsFreshSession(t *testing.T) {
 	}
 }
 
+func TestSubagentKindFromAgentIdHeader(t *testing.T) {
+	h := http.Header{"X-Claude-Code-Agent-Id": []string{"a2ecf920ff13c2c95"}}
+	if subagentKind(h, claudeBody("看起来像主对话", "sys")) != "subagent" {
+		t.Fatal("agent-id header marked every subagent dump")
+	}
+}
+
+func TestSubagentKindFromBillingFlag(t *testing.T) {
+	sub := "x-anthropic-billing-header: cc_version=2.1.251.b36; cc_entrypoint=cli; cc_is_subagent=true;"
+	if subagentKind(nil, claudeBody("搜代码", sub)) != "subagent" {
+		t.Fatal("cc_is_subagent=true in system should mark a subagent")
+	}
+	mainSys := "x-anthropic-billing-header: cc_version=2.1.251.0de; cc_entrypoint=cli;"
+	if subagentKind(nil, claudeBody("主对话", mainSys)) != "" {
+		t.Fatal("main billing line must not be treated as subagent")
+	}
+}
+
 func TestSubagentKindFromParentAgentHeader(t *testing.T) {
 	h := http.Header{"X-Claude-Code-Parent-Agent-Id": []string{"parent-1"}}
 	if subagentKind(h, claudeBody("搜一下", "explore")) != "subagent" {

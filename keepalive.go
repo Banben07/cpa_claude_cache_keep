@@ -134,9 +134,10 @@ func isKeepaliveCandidate(body []byte) bool {
 }
 
 // subagentKind reports whether this Claude request is a Claude Code Task/Agent
-// child, not the parent conversation. Those get their own system prompt and
-// first user message, so they already hash to a separate keepalive slot; we
-// skip them instead of occupying max_sessions and pinging a job that dies in minutes.
+// child. Confirmed against CPA request dumps on the live gateway:
+// parent-agent-id, x-app=cli-bg, and task_budget were absent; subagent turns
+// always had X-Claude-Code-Agent-Id and system text `cc_is_subagent=true`.
+// Main turns shared the same X-Claude-Code-Session-Id and x-app=cli.
 func subagentKind(headers http.Header, body []byte) string {
 	if headerGetCI(headers, "X-Claude-Code-Parent-Agent-Id") != "" {
 		return "subagent"
@@ -144,7 +145,13 @@ func subagentKind(headers http.Header, body []byte) string {
 	if strings.EqualFold(headerGetCI(headers, "X-App"), "cli-bg") {
 		return "background"
 	}
+	if headerGetCI(headers, "X-Claude-Code-Agent-Id") != "" {
+		return "subagent"
+	}
 	if gjson.GetBytes(body, "task_budget").Exists() {
+		return "subagent"
+	}
+	if strings.Contains(strings.ToLower(systemText(body)), "cc_is_subagent=true") {
 		return "subagent"
 	}
 	return ""
