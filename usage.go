@@ -14,7 +14,7 @@ const (
 	keepaliveHeaderKey = "X-Claude-Cache-Keepalive"
 	keepaliveHeaderVal = "1"
 	defaultWindowMin   = 300
-	defaultReservePct  = 0
+	defaultReservePct  = 5
 	maxQuotaSamples    = 5
 )
 
@@ -368,8 +368,8 @@ func estimateNextChatUnitsLocked(model string, body []byte) int64 {
 
 // shouldBlockChat is local: it never contacts Anthropic. CPA chat is stopped
 // when the last known 5h utilization already hit the reserve line, or when
-// this request is predicted to land past that line (so a fat prompt near 100%
-// does not punch through and start a streak of upstream 429s).
+// this request is predicted to land past that line (so a fat prompt at 93%
+// does not punch through 100% and start a streak of upstream 429s).
 func shouldBlockChat(now time.Time, model string, body []byte) bool {
 	mu.Lock()
 	defer mu.Unlock()
@@ -457,7 +457,7 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 	trimUsageLocked(now)
 	chat, keep := sumUsageLocked()
 	reserve := cfg.ReservePercent
-	if reserve < 0 {
+	if reserve <= 0 {
 		reserve = defaultReservePct
 	}
 	windowMin := cfg.WindowMinutes
@@ -568,10 +568,7 @@ func pickDueWithinBudget(due []session, remain int64) []session {
 }
 
 func chatGuardResponse() pluginapi.RequestInterceptResponse {
-	msg := "5 小时额度即将用尽，CPA 对话先停，避免打穿窗口后被上游连着拒。窗口回落后再发消息。"
-	if cfg.ReservePercent > 0 {
-		msg = "已为缓存保活预留下 5 小时额度，CPA 对话先停。保活仍会继续刷新 prompt cache；窗口回落后再发消息。"
-	}
+	msg := "CPA 对话先停，避免一发打穿 5 小时额度。保活仍会用留下的一截刷新 cache；窗口回落后再发消息。"
 	body, _ := json.Marshal(map[string]any{
 		"type": "error",
 		"error": map[string]string{

@@ -126,31 +126,15 @@ func buildStatusView(st statusPage) statusView {
 	}
 	switch {
 	case st.Budget.ChatBlocked:
-		if st.Budget.ReservePercent <= 0 {
-			view.BudgetNote = "CPA 对话已停：5 小时额度用尽或这一发会打穿。"
-		} else {
-			view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
-		}
+		view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活，避免一发打穿 100%%。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
 	case st.Budget.KeepalivePaused:
 		view.BudgetNote = st.Budget.PauseReason
 	case st.Budget.UsedKnown:
-		if st.Budget.ReservePercent <= 0 {
-			view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。对话用到 100%%（或这一发会打穿）才拦，不为保活另留百分比。", st.Budget.UsedPercent)
-		} else {
-			view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。CPA 对话会在 %d%% 停住，把最后 %d%% 留给保活。", st.Budget.UsedPercent, st.Budget.BlockAtPercent, st.Budget.ReservePercent)
-		}
+		view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。CPA 对话会在 %d%% 停住，把最后 %d%% 留给保活。", st.Budget.UsedPercent, st.Budget.BlockAtPercent, st.Budget.ReservePercent)
 	case st.Budget.Budget > 0:
-		if st.Budget.ReservePercent <= 0 {
-			view.BudgetNote = "还没读到上游 5h 用量头，先按加权预算拦会打穿窗口的对话。"
-		} else {
-			view.BudgetNote = fmt.Sprintf("还没读到上游 5h 用量头，先按加权预算拦对话，预留 %d%% 给保活。", st.Budget.ReservePercent)
-		}
+		view.BudgetNote = fmt.Sprintf("还没读到上游 5h 用量头，先按加权预算拦对话，预留 %d%% 给保活。", st.Budget.ReservePercent)
 	default:
-		if st.Budget.ReservePercent <= 0 {
-			view.BudgetNote = "等下一轮 CPA 请求带上 5h 用量头后，对话用到 100%（或这一发会打穿）才拦。"
-		} else {
-			view.BudgetNote = fmt.Sprintf("等下一轮 CPA 请求带上 5h 用量头后，会在 %d%% 拦住对话，把最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
-		}
+		view.BudgetNote = fmt.Sprintf("等下一轮 CPA 请求带上 5h 用量头后，会在 %d%% 拦住对话，把最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
 	}
 	interval := time.Duration(st.IntervalMin) * time.Minute
 	view.Sessions = make([]sessionRow, 0, len(st.Sessions))
@@ -565,15 +549,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">最近一次到期</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
   <div class="stats">
-    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>{{if eq .ReservePercent 0}}对话用到 100% 才停{{else}}CPA 对话停在 {{.BudgetBlock}}{{end}}</small></div></div>
+    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>CPA 对话停在 {{.BudgetBlock}}</small></div></div>
     <div class="stat"><div class="k">CPA 对话 / 保活</div><div class="v">{{.BudgetChat}} / {{.BudgetKeep}}<small>{{.BudgetNote}}</small></div></div>
   </div>
   {{if .ChatBlocked}}
-  {{if eq .ReservePercent 0}}
-  <div class="warn">CPA 上的新对话已拦住：5 小时额度用尽，或这一发会打穿窗口。窗口回落后会自动恢复。</div>
-  {{else}}
-  <div class="warn">CPA 上的新对话请求已被拦住，把 5 小时额度留给保活。窗口回落后会自动恢复。</div>
-  {{end}}
+  <div class="warn">CPA 上的新对话请求已被拦住，避免一发打穿 5 小时额度。保活仍会继续；窗口回落后会自动恢复。</div>
   {{end}}
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>
@@ -603,7 +583,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。{{if eq .ReservePercent 0}}CPA 对话用到 100%（或这一发预估会打穿）才停，不为保活另留百分比。{{else}}CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。{{end}} Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
+  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，留下一截给保活，也避免最后一发打穿 100%。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
   {{if .SubagentNote}}
   <p class="hint">{{.SubagentNote}}</p>
   {{end}}

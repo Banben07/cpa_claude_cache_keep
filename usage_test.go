@@ -46,7 +46,7 @@ func TestKeepaliveReserveBlocksChatWhenBudgetKnown(t *testing.T) {
 	}
 }
 
-func TestFiveHourHeaderBlocksChatAtHundred(t *testing.T) {
+func TestFiveHourHeaderBlocksChatNotKeepalive(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)
 	recordUsage(pluginapi.UsageRecord{
@@ -55,18 +55,21 @@ func TestFiveHourHeaderBlocksChatAtHundred(t *testing.T) {
 		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
 		ResponseHeaders: http.Header{
 			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
-			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"1"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.96"},
 		},
 	})
 	snap := currentBudget(time.Now())
-	if !snap.UsedKnown || snap.UsedPercent < 99.9 {
+	if !snap.UsedKnown || snap.UsedPercent < 95 {
 		t.Fatalf("util=%v known=%v", snap.UsedPercent, snap.UsedKnown)
 	}
 	if !snap.ChatBlocked {
-		t.Fatal("CPA chat should stop at 100% with default reserve 0")
+		t.Fatal("CPA chat should stop at 95% so a long turn cannot punch through 100%")
 	}
-	if !snap.KeepalivePaused {
-		t.Fatal("keepalive should pause once the 5h window is exhausted")
+	if snap.KeepalivePaused {
+		t.Fatal("keepalive should still run in the last 5%")
+	}
+	if snap.BlockAtPercent != 95 {
+		t.Fatalf("block at %d", snap.BlockAtPercent)
 	}
 }
 
@@ -84,11 +87,11 @@ func TestDefaultReserveDoesNotTripAtNinetyPercent(t *testing.T) {
 	})
 	snap := currentBudget(time.Now())
 	if snap.ChatBlocked {
-		t.Fatal("91% should still allow CPA chat when reserve is 0")
+		t.Fatal("91% should still allow CPA chat when stopping at 95%")
 	}
 }
 
-func TestDefaultReserveAllowsNinetyNinePercent(t *testing.T) {
+func TestDefaultReserveBlocksNinetyEightPercent(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)
 	recordUsage(pluginapi.UsageRecord{
@@ -97,36 +100,15 @@ func TestDefaultReserveAllowsNinetyNinePercent(t *testing.T) {
 		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
 		ResponseHeaders: http.Header{
 			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
-			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.992"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.98"},
 		},
 	})
 	snap := currentBudget(time.Now())
-	if snap.ChatBlocked {
-		t.Fatal("99.2% should still allow CPA chat with default reserve 0")
+	if !snap.ChatBlocked {
+		t.Fatal("98% is past the 95% stop line")
 	}
-	if snap.BlockAtPercent != 100 {
-		t.Fatalf("block at %d", snap.BlockAtPercent)
-	}
-}
-
-func TestKeepalivePausesBeforeChatWhenNoReserve(t *testing.T) {
-	resetSessionsForTest()
-	t.Cleanup(resetSessionsForTest)
-	recordUsage(pluginapi.UsageRecord{
-		Provider: "claude",
-		Model:    "claude-opus-5",
-		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
-		ResponseHeaders: http.Header{
-			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
-			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.996"},
-		},
-	})
-	snap := currentBudget(time.Now())
-	if snap.ChatBlocked {
-		t.Fatal("99.6% must still allow chat when nothing is reserved for keepalive")
-	}
-	if !snap.KeepalivePaused {
-		t.Fatal("keepalive should stand down in the last 0.5% so chat can finish the window")
+	if snap.KeepalivePaused {
+		t.Fatal("keepalive should still run between 95% and ~100%")
 	}
 }
 
@@ -268,11 +250,11 @@ func TestParseReservePercent(t *testing.T) {
 		t.Fatal("guard_chat should default on")
 	}
 	zero := parseConfig(nil)
-	if zero.ReservePercent != 0 {
+	if zero.ReservePercent != 5 {
 		t.Fatalf("default reserve=%d", zero.ReservePercent)
 	}
 	explicitZero := parseConfig([]byte("reserve_percent: 0\n"))
-	if explicitZero.ReservePercent != 0 {
+	if explicitZero.ReservePercent != 5 {
 		t.Fatalf("explicit 0 became %d", explicitZero.ReservePercent)
 	}
 }
@@ -289,11 +271,11 @@ func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 	if !strings.Contains(html, pluginVersion) {
 		t.Fatal("missing plugin version")
 	}
-	if !strings.Contains(html, "对话用到 100% 才停") {
-		t.Fatalf("default copy should not stop chat early: %s", html)
+	if !strings.Contains(html, "CPA 对话停在 95%") {
+		t.Fatalf("default should stop chat at 95%%: %s", html)
 	}
-	if strings.Contains(html, "最后 0%") {
-		t.Fatal("do not advertise a 0% keepalive slice")
+	if strings.Contains(html, "对话用到 100% 才停") {
+		t.Fatal("98/100 is too thin; default must stop earlier")
 	}
 }
 
