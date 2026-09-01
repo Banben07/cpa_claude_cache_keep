@@ -52,6 +52,9 @@ var (
 	fiveHourUtil    float64
 	fiveHourUtilOK  bool
 	fiveHourStatus  string
+	lastCalibUtil   float64
+	lastCalibOK     bool
+	unitsPerUtil    float64 // weighted units that move utilization by 1.0 (100%)
 )
 
 func isKeepaliveRequest(headers http.Header) bool {
@@ -158,21 +161,38 @@ func recordUsage(rec pluginapi.UsageRecord) {
 	if rec.Failed {
 		noteUsageFailure(rec)
 	}
-	units := weightedUnits(rec.Model, rec.Detail)
-	if units <= 0 && !rec.Failed {
-		return
-	}
 	now := rec.RequestedAt
 	if now.IsZero() {
 		now = time.Now()
 	}
+	units := weightedUnits(rec.Model, rec.Detail)
 	util, status, headerOK := parseFiveHourUtilization(rec.ResponseHeaders)
 	mu.Lock()
 	defer mu.Unlock()
+	keep := keepaliveActive > 0
 	if headerOK {
+		if fiveHourUtilOK && util+0.05 < fiveHourUtil {
+			// Window rolled over; previous units-per-percent no longer applies.
+			unitsPerUtil = 0
+			lastCalibOK = false
+			lastCalibUtil = 0
+		}
+		if units > 0 && !rec.Failed && !keep && lastCalibOK && util > lastCalibUtil {
+			delta := util - lastCalibUtil
+			if delta >= 0.005 {
+				sample := float64(units) / delta
+				if unitsPerUtil <= 0 {
+					unitsPerUtil = sample
+				} else {
+					unitsPerUtil = unitsPerUtil*0.65 + sample*0.35
+				}
+			}
+		}
 		fiveHourUtil = util
 		fiveHourStatus = status
 		fiveHourUtilOK = true
+		lastCalibUtil = util
+		lastCalibOK = true
 		if status == "rejected" || util >= 0.995 {
 			until := now.Add(20 * time.Minute)
 			if limitHitUntil.Before(until) {
@@ -180,7 +200,9 @@ func recordUsage(rec pluginapi.UsageRecord) {
 			}
 		}
 	}
-	keep := keepaliveActive > 0
+	if units <= 0 && !rec.Failed {
+		return
+	}
 	if units > 0 {
 		usageEvents = append(usageEvents, usageEvent{At: now, Units: units, Keepalive: keep})
 		trimUsageLocked(now)
@@ -208,6 +230,44 @@ func recordUsage(rec pluginapi.UsageRecord) {
 			item.LastChatUnits = units
 		}
 	}
+}
+
+func estimateBodyUnits(model string, body []byte) int64 {
+	tokens := int64(len(body) / 4)
+	if tokens < 1 {
+		tokens = 1
+	}
+	return weightedUnits(model, pluginapi.UsageDetail{InputTokens: tokens, OutputTokens: 1})
+}
+
+func estimateNextChatUnitsLocked(model string, body []byte) int64 {
+	if item := sessions[sessionKey(model, body)]; item != nil && item.LastChatUnits > 0 {
+		return item.LastChatUnits
+	}
+	return estimateBodyUnits(model, body)
+}
+
+// shouldBlockChat is local: it never contacts Anthropic. CPA chat is stopped
+// when the last known 5h utilization already hit the reserve line, or when
+// this request is predicted to land past that line (so a fat prompt at 97%
+// does not punch through 100% and start a streak of upstream 429s).
+func shouldBlockChat(now time.Time, model string, body []byte) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	snap := currentBudgetLocked(now)
+	if snap.ChatBlocked {
+		return true
+	}
+	if !snap.GuardChat || !fiveHourUtilOK || unitsPerUtil <= 0 {
+		return false
+	}
+	est := estimateNextChatUnitsLocked(model, body)
+	if est <= 0 {
+		return false
+	}
+	blockAt := float64(snap.BlockAtPercent) / 100
+	predicted := fiveHourUtil + float64(est)/unitsPerUtil
+	return predicted >= blockAt
 }
 
 func noteUsageFailure(rec pluginapi.UsageRecord) {

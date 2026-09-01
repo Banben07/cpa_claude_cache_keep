@@ -144,7 +144,7 @@ func buildStatusView(st statusPage) statusView {
 	case st.Budget.ChatBlocked:
 		view.State = "armed"
 		view.StateLabel = "对话已限流"
-		view.StateHint = "5 小时额度快用完，已拦住 CPA 上的新对话请求，把最后一截留给缓存保活。窗口回落后会自动放开。"
+		view.StateHint = "5 小时额度快用完。拦截发生在 CPA 本地，请求不会打到 Anthropic。最后一截留给缓存保活，窗口回落后会自动放开。"
 	case st.Budget.KeepalivePaused && st.EnabledCount > 0:
 		view.State = "armed"
 		view.StateLabel = "保活暂停"

@@ -209,3 +209,134 @@ func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 		t.Fatalf("missing budget panel: %s", html)
 	}
 }
+
+func TestRecordUsageReadsHeaderWhenUnitsZero(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-sonnet-5",
+		Detail:   pluginapi.UsageDetail{},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.42"},
+		},
+	})
+	snap := currentBudget(time.Now())
+	if !snap.UsedKnown || snap.UsedPercent < 41 || snap.UsedPercent > 43 {
+		t.Fatalf("util=%v known=%v", snap.UsedPercent, snap.UsedKnown)
+	}
+}
+
+func TestCalibratesUnitsPerUtilFromChat(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	hdr := func(u string) http.Header {
+		return http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{u},
+		}
+	}
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude", Model: "claude-sonnet-5",
+		Detail:          pluginapi.UsageDetail{InputTokens: 10000, OutputTokens: 1},
+		ResponseHeaders: hdr("0.80"),
+	})
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude", Model: "claude-sonnet-5",
+		Detail:          pluginapi.UsageDetail{InputTokens: 10000, OutputTokens: 1},
+		ResponseHeaders: hdr("0.90"),
+	})
+	mu.Lock()
+	got := unitsPerUtil
+	mu.Unlock()
+	// 10000 uncached + 5 output = 10005 units over 0.10 utilization.
+	if got < 90000 || got > 110000 {
+		t.Fatalf("unitsPerUtil=%v", got)
+	}
+}
+
+func TestOvershootPredictionBlocksLargeChat(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	body := claudeBody("别把额度用光", "sys")
+	mu.Lock()
+	fiveHourUtil = 0.90
+	fiveHourUtilOK = true
+	unitsPerUtil = 100000
+	id := sessionKey("claude-opus-5", body)
+	sessions[id] = &session{ID: id, Model: "claude-opus-5", Body: body, LastChatUnits: 15000}
+	mu.Unlock()
+	if !terminatedChat(t, body) {
+		t.Fatal("90% + 15% predicted should block before punching through 100%")
+	}
+}
+
+func TestOvershootAllowsSmallFollowUp(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	body := claudeBody("短回复", "sys")
+	mu.Lock()
+	fiveHourUtil = 0.90
+	fiveHourUtilOK = true
+	unitsPerUtil = 100000
+	id := sessionKey("claude-opus-5", body)
+	sessions[id] = &session{ID: id, Model: "claude-opus-5", Body: body, LastChatUnits: 1000}
+	mu.Unlock()
+	if terminatedChat(t, body) {
+		t.Fatal("90% + 1% should still go upstream")
+	}
+}
+
+func TestWindowResetClearsCalibration(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	hdr := func(u string) http.Header {
+		return http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{u},
+		}
+	}
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude", Model: "claude-sonnet-5",
+		Detail:          pluginapi.UsageDetail{InputTokens: 10000, OutputTokens: 1},
+		ResponseHeaders: hdr("0.90"),
+	})
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude", Model: "claude-sonnet-5",
+		Detail:          pluginapi.UsageDetail{InputTokens: 10000, OutputTokens: 1},
+		ResponseHeaders: hdr("0.10"),
+	})
+	mu.Lock()
+	got := unitsPerUtil
+	ok := lastCalibOK
+	mu.Unlock()
+	if got != 0 {
+		t.Fatalf("calibration should reset after window drop, unitsPerUtil=%v", got)
+	}
+	if !ok {
+		t.Fatal("new window should start calibrating from the reset reading")
+	}
+}
+
+func terminatedChat(t *testing.T, body []byte) bool {
+	t.Helper()
+	raw, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		ToFormat: "claude",
+		Model:    "claude-opus-5",
+		Body:     body,
+	})
+	resp, err := handleInterceptBefore(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(resp, &env); err != nil {
+		t.Fatal(err)
+	}
+	var out pluginapi.RequestInterceptResponse
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out.Terminate && out.StatusCode == 429
+}

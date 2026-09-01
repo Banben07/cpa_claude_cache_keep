@@ -220,6 +220,9 @@ func resetSessionsForTest() {
 	fiveHourUtil = 0
 	fiveHourUtilOK = false
 	fiveHourStatus = ""
+	lastCalibUtil = 0
+	lastCalibOK = false
+	unitsPerUtil = 0
 	cfg = defaultConfig()
 	mu.Unlock()
 }

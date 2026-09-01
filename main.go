@@ -220,7 +220,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.4.2",
+			Version:          "0.4.3",
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
@@ -281,7 +281,7 @@ func handleInterceptBefore(raw []byte) ([]byte, error) {
 	if !isClaudeUpstream(req.ToFormat, req.Model) || !isKeepaliveCandidate(req.Body) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
-	if currentBudget(time.Now()).ChatBlocked {
+	if shouldBlockChat(time.Now(), req.Model, req.Body) {
 		return okEnvelope(chatGuardResponse())
 	}
 	return okEnvelope(pluginapi.RequestInterceptResponse{})

@@ -17,11 +17,14 @@ CPA 插件：按对话记住 Claude 上游请求，每隔 50 分钟把**已勾�
 
 ## 5 小时额度
 
-Claude Code 的 session limit 是滚动 5 小时。插件会读上游响应头 `Anthropic-Ratelimit-Unified-5h-Utilization`：
+Claude Code 的 session limit 是滚动 5 小时。插件**不会为了查额度多打上游**：只读已经回来的响应头 `Anthropic-Ratelimit-Unified-5h-Utilization`。
 
-- **CPA 对话**用到 `100 - reserve_percent`（默认 **98%**）就拦截，返回 429
+- **CPA 对话**用到 `100 - reserve_percent`（默认 **98%**）就在本地拦截，返回 429，请求到不了 Anthropic
+- 已经标定过「多少用量对应 1%」时，若**这一发**预估会越过预留线，也会在本地拦住，避免 97% 时一发超长上下文打穿 100%、随后被上游连着拒
 - **保活**继续用最后 2%（`max_tokens=1` + cache read，用不了 10%）
 - 真的用到 100% / `rejected` 时，保活也停，避免空打
+
+所以你看到的 429 几乎都是 CPA 本地的；上游连着拒，只会发生在已经打穿窗口之后。正在飞行的那一次拦不住，最多超一发。
 
 `five_hour_budget` 只在没有用量头时当后备。不要把保活自己限死，那会把窗口全留给对话。
 
