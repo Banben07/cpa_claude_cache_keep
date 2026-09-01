@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.4.7"
+	pluginVersion = "0.4.8"
 )
 
 type envelope struct {
@@ -324,6 +324,10 @@ func handleStatusRequest(raw []byte) ([]byte, error) {
 	}
 	if id := sanitizeSessionID(queryGet(req.Query, "forget")); id != "" {
 		forgetSession(id)
+		redirect = true
+	}
+	if id := sanitizeSessionID(queryGet(req.Query, "rename")); id != "" {
+		renameSession(id, queryGet(req.Query, "name"))
 		redirect = true
 	}
 	if redirect && strings.TrimSpace(req.Path) != "" {

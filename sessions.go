@@ -3,12 +3,14 @@ package main
 import (
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 )
 
 type session struct {
 	ID            string
 	Label         string
+	CustomLabel   bool
 	Enabled       bool
 	Model         string
 	SourceFormat  string
@@ -44,7 +46,9 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 		return
 	}
 	if existing, ok := sessions[id]; ok {
-		existing.Label = label
+		if !existing.CustomLabel {
+			existing.Label = label
+		}
 		existing.Model = model
 		existing.SourceFormat = sourceFormat
 		existing.ToFormat = toFormat
@@ -97,6 +101,36 @@ func forgetSession(id string) bool {
 	}
 	delete(sessions, id)
 	return true
+}
+
+func renameSession(id, name string) bool {
+	name = sanitizeSessionName(name)
+	mu.Lock()
+	defer mu.Unlock()
+	item, ok := sessions[id]
+	if !ok {
+		return false
+	}
+	if name == "" {
+		item.CustomLabel = false
+		item.Label = sessionLabel(item.Body)
+		return true
+	}
+	item.CustomLabel = true
+	item.Label = name
+	return true
+}
+
+func sanitizeSessionName(name string) string {
+	name = strings.TrimSpace(name)
+	var b strings.Builder
+	for _, r := range name {
+		if r < 32 || r == 127 {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return truncateRunes(b.String(), 42)
 }
 
 func dueSnapshots(now time.Time, interval time.Duration) []session {

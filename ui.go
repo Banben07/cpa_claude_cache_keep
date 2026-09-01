@@ -466,6 +466,19 @@ h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.02em; }
 .cb.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); background: var(--ok-bg); }
 .cb .mark { font-size: 16px; line-height: 1; }
 h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; word-break: break-word; }
+.rename { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 4px; }
+.rename input {
+  flex: 1; min-width: 10rem; max-width: 22rem;
+  background: #11141a; color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font: inherit; font-weight: 650; font-size: 15px;
+}
+.rename input:focus { outline: none; border-color: color-mix(in srgb, var(--armed) 55%, var(--line)); }
+.rename button {
+  color: var(--armed); background: var(--armed-bg);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer;
+}
 .meta { color: var(--muted); font-size: 13px; }
 .meta span { white-space: nowrap; }
 .times { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -551,7 +564,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <article class="session {{.RowClass}}">
       <a class="cb {{if .Enabled}}on{{end}}" data-action href="{{.ToggleHref}}" title="{{if .Enabled}}取消保活{{else}}开启保活{{end}}"><span class="mark">{{if .Enabled}}✓{{else}}○{{end}}</span></a>
       <div>
-        <h3>{{.Label}}</h3>
+        <form class="rename" data-rename action="" method="get">
+          <input type="hidden" name="rename" value="{{.ID}}">
+          <input name="name" value="{{.Label}}" maxlength="42" aria-label="会话名称" spellcheck="false">
+          <button type="submit">改名</button>
+        </form>
         <div class="meta">{{.Model}} · TTL {{.CacheTTL}} · {{.Messages}} 条消息 · {{.BodySize}}</div>
         <div class="times">
           <span>最近请求 {{.SavedAt}} {{.SavedAgo}}</span>
@@ -564,7 +581,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
+  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
   {{if .SubagentNote}}
   <p class="hint">{{.SubagentNote}}</p>
   {{end}}
@@ -639,8 +656,23 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
       location.assign(a.href);
     });
   });
+  document.addEventListener("submit", function (ev) {
+    var form = ev.target.closest("form[data-rename]");
+    if (!form) {
+      return;
+    }
+    ev.preventDefault();
+    var action = form.getAttribute("action") || location.pathname;
+    var url = action.split("?")[0] + "?" + new URLSearchParams(new FormData(form)).toString();
+    load(url).catch(function () {
+      form.submit();
+    });
+  });
   timer = setInterval(function () {
     if (document.hidden) {
+      return;
+    }
+    if (document.activeElement && document.activeElement.closest("form[data-rename]")) {
       return;
     }
     load(location.pathname).catch(function () {});

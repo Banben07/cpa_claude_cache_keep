@@ -9,7 +9,7 @@ CPA 插件：按对话记住 Claude 上游请求，每隔 50 分钟把**已勾�
 1. `request.intercept_after` 按「模型 + 第一条用户消息 + system 前缀」识别对话
 2. 最多记住 8 路会话；新对话默认勾选保活。Claude Code 子代理不进保活名单。实测请求日志里 `X-Claude-Code-Parent-Agent-Id` / `x-app: cli-bg` / `task_budget` 都没有；子代理带 `X-Claude-Code-Agent-Id`，system 里有 `cc_is_subagent=true`，且和主对话共用同一个 `X-Claude-Code-Session-Id`
 3. 每路从最后一次对话请求起算，每隔 50 分钟重放已勾选会话（`stream=false`，`max_tokens` 限制输出）。新消息会重置该路倒计时，不跟插件启动或上次保活时钟走。
-4. 状态页可单独勾选 / 取消 / 忘记某一路
+4. 状态页可单独勾选 / 取消 / 改名 / 忘记某一路。改过的名字在后续对话更新快照时会保留；留空保存则回到首条用户消息
 
 取消勾选后仍会跟着新消息更新快照，重新打开会用最新前缀。已勾选的不会因为空闲被踢掉（保活本来就是在你不说话时打请求）。未勾选的超过 `idle_evict_minutes`（默认 180）会被丢掉；超过上限时优先丢掉未勾选、最久没说话的对话。
 

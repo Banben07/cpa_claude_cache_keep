@@ -141,6 +141,61 @@ func TestForgetSession(t *testing.T) {
 	}
 }
 
+func TestRenameSessionPersistsAcrossUpsert(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("保活开关", "sys"))
+	id := listSessions()[0].ID
+	if !renameSession(id, "工作仓库") {
+		t.Fatal("rename failed")
+	}
+	updated := []byte(`{"model":"claude-opus-5","max_tokens":8000,"messages":[{"role":"user","content":"保活开关"},{"role":"assistant","content":"later"}],"system":[{"type":"text","text":"sys","cache_control":{"ttl":"1h"}}]}`)
+	upsertSession("claude-opus-5", "claude", "claude", nil, updated)
+	got := listSessions()[0]
+	if got.Label != "工作仓库" || !got.CustomLabel {
+		t.Fatalf("custom name should survive new turns: %+v", got)
+	}
+	if !renameSession(id, "  ") {
+		t.Fatal("blank rename should reset")
+	}
+	got = listSessions()[0]
+	if got.CustomLabel || got.Label != "保活开关" {
+		t.Fatalf("blank name should revert to first user text: %+v", got)
+	}
+}
+
+func TestHandleStatusRenameRedirects(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("开关跳转", "sys"))
+	id := listSessions()[0].ID
+	raw, err := json.Marshal(pluginapi.ManagementRequest{
+		Path:  "/v0/resource/plugins/claude-cache-keepalive/status",
+		Query: url.Values{"rename": {id}, "name": {"实验室"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := handleStatusRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(resp, &env); err != nil {
+		t.Fatal(err)
+	}
+	var out pluginapi.ManagementResponse
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status=%d", out.StatusCode)
+	}
+	if listSessions()[0].Label != "实验室" {
+		t.Fatalf("label=%s", listSessions()[0].Label)
+	}
+}
+
 func TestHandleStatusToggleRedirects(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)
