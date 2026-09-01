@@ -208,6 +208,87 @@ func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 	if !strings.Contains(html, "5 小时已用") {
 		t.Fatalf("missing budget panel: %s", html)
 	}
+	if !strings.Contains(html, "额度记录") {
+		t.Fatal("missing quota log section")
+	}
+	if !strings.Contains(html, pluginVersion) {
+		t.Fatal("missing plugin version")
+	}
+}
+
+func TestQuotaLogShowsRawFiveHourHeaders(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.37"},
+			"Anthropic-Ratelimit-Unified-7d-Utilization": []string{"0.12"},
+			"Anthropic-Ratelimit-Unified-Status":         []string{"allowed"},
+		},
+	})
+	html := renderStatusHTML()
+	if !strings.Contains(html, "5h-utilization=0.37") {
+		t.Fatalf("missing raw 5h utilization: %s", html)
+	}
+	if !strings.Contains(html, "37.0%") && !strings.Contains(html, "37%") {
+		t.Fatalf("missing parsed 5h percent: %s", html)
+	}
+	got := listQuotaSamples()
+	if len(got) != 1 || !got[0].HeaderOK || got[0].Util5h < 0.36 {
+		t.Fatalf("samples=%+v", got)
+	}
+}
+
+func TestQuotaLogKeepsChatWithoutHeaders(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-sonnet-5",
+		Detail:   pluginapi.UsageDetail{InputTokens: 200, OutputTokens: 8},
+	})
+	got := listQuotaSamples()
+	if len(got) != 1 || got[0].HeaderOK {
+		t.Fatalf("expected one missing-header sample, got=%+v", got)
+	}
+	html := renderStatusHTML()
+	if !strings.Contains(html, "未读到") {
+		t.Fatalf("missing missing-header label: %s", html)
+	}
+}
+
+func TestQuotaLogSkipsEmptyCountTokens(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-sonnet-5",
+	})
+	if len(listQuotaSamples()) != 0 {
+		t.Fatal("zero-unit requests without headers should not flood the quota log")
+	}
+}
+
+func TestQuotaLogParsesLowercaseHeaders(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail:   pluginapi.UsageDetail{InputTokens: 10, OutputTokens: 1},
+		ResponseHeaders: http.Header{
+			"anthropic-ratelimit-unified-5h-utilization": []string{"0.2"},
+			"anthropic-ratelimit-unified-5h-status":      []string{"allowed_warning"},
+		},
+	})
+	got := listQuotaSamples()
+	if len(got) != 1 || !got[0].HeaderOK || got[0].Status5h != "allowed_warning" {
+		t.Fatalf("samples=%+v", got)
+	}
 }
 
 func TestRecordUsageReadsHeaderWhenUnitsZero(t *testing.T) {

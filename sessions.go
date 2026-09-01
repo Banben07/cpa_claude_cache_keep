@@ -223,6 +223,7 @@ func resetSessionsForTest() {
 	lastCalibUtil = 0
 	lastCalibOK = false
 	unitsPerUtil = 0
+	quotaSamples = nil
 	cfg = defaultConfig()
 	mu.Unlock()
 }

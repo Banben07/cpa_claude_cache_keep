@@ -15,12 +15,34 @@ const (
 	keepaliveHeaderVal = "1"
 	defaultWindowMin   = 300
 	defaultReservePct  = 2
+	maxQuotaSamples    = 30
 )
 
 type usageEvent struct {
 	At        time.Time
 	Units     int64
 	Keepalive bool
+}
+
+type quotaSample struct {
+	At            time.Time
+	Keepalive     bool
+	Failed        bool
+	Model         string
+	HeaderOK      bool
+	Util5h        float64
+	Status5h      string
+	Reset5h       time.Time
+	RawUtil5h     string
+	RawStatus5h   string
+	RawReset5h    string
+	Header7dOK    bool
+	Util7d        float64
+	Status7d      string
+	RawUtil7d     string
+	RawStatus7d   string
+	UnifiedStatus string
+	Units         int64
 }
 
 type budgetSnapshot struct {
@@ -55,6 +77,7 @@ var (
 	lastCalibUtil   float64
 	lastCalibOK     bool
 	unitsPerUtil    float64 // weighted units that move utilization by 1.0 (100%)
+	quotaSamples    []quotaSample
 )
 
 func isKeepaliveRequest(headers http.Header) bool {
@@ -105,24 +128,29 @@ func modelWeight(model string) int64 {
 	}
 }
 
-func parseFiveHourUtilization(headers http.Header) (util float64, status string, ok bool) {
+func headerGetCI(headers http.Header, name string) string {
 	if headers == nil {
-		return 0, "", false
+		return ""
 	}
-	status = strings.ToLower(strings.TrimSpace(headers.Get("Anthropic-Ratelimit-Unified-5h-Status")))
-	raw := strings.TrimSpace(headers.Get("Anthropic-Ratelimit-Unified-5h-Utilization"))
-	if raw == "" && status == "" {
-		return 0, "", false
+	if v := strings.TrimSpace(headers.Get(name)); v != "" {
+		return v
 	}
-	if raw == "" {
-		if status == "rejected" {
-			return 1, status, true
+	for k, vals := range headers {
+		if strings.EqualFold(k, name) && len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
 		}
-		return 0, status, true
+	}
+	return ""
+}
+
+func parseUtilFraction(raw string) (float64, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
 	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, status, status != ""
+		return 0, false
 	}
 	if v > 1.5 {
 		v = v / 100
@@ -133,7 +161,93 @@ func parseFiveHourUtilization(headers http.Header) (util float64, status string,
 	if v > 1 {
 		v = 1
 	}
-	return v, status, true
+	return v, true
+}
+
+func parseUnixTime(raw string) time.Time {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}
+	}
+	if sec, err := strconv.ParseFloat(raw, 64); err == nil && sec > 1e8 {
+		return time.Unix(int64(sec), 0).UTC()
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.UTC()
+	}
+	return time.Time{}
+}
+
+func parseQuotaSample(rec pluginapi.UsageRecord, now time.Time, keepalive bool) quotaSample {
+	h := rec.ResponseHeaders
+	rawUtil5h := headerGetCI(h, "Anthropic-Ratelimit-Unified-5h-Utilization")
+	rawStatus5h := headerGetCI(h, "Anthropic-Ratelimit-Unified-5h-Status")
+	rawReset5h := headerGetCI(h, "Anthropic-Ratelimit-Unified-5h-Reset")
+	rawUtil7d := headerGetCI(h, "Anthropic-Ratelimit-Unified-7d-Utilization")
+	rawStatus7d := headerGetCI(h, "Anthropic-Ratelimit-Unified-7d-Status")
+	sample := quotaSample{
+		At:            now,
+		Keepalive:     keepalive,
+		Failed:        rec.Failed,
+		Model:         rec.Model,
+		RawUtil5h:     rawUtil5h,
+		RawStatus5h:   strings.ToLower(rawStatus5h),
+		RawReset5h:    rawReset5h,
+		RawUtil7d:     rawUtil7d,
+		RawStatus7d:   strings.ToLower(rawStatus7d),
+		UnifiedStatus: strings.ToLower(headerGetCI(h, "Anthropic-Ratelimit-Unified-Status")),
+		Reset5h:       parseUnixTime(rawReset5h),
+	}
+	if rec.Failed {
+		sample.Units = 0
+	} else {
+		sample.Units = weightedUnits(rec.Model, rec.Detail)
+	}
+	if v, ok := parseUtilFraction(rawUtil5h); ok {
+		sample.Util5h = v
+		sample.HeaderOK = true
+	}
+	if sample.RawStatus5h != "" {
+		sample.Status5h = sample.RawStatus5h
+		sample.HeaderOK = true
+		if rawUtil5h == "" && sample.Status5h == "rejected" {
+			sample.Util5h = 1
+		}
+	}
+	if v, ok := parseUtilFraction(rawUtil7d); ok {
+		sample.Util7d = v
+		sample.Header7dOK = true
+	}
+	if sample.RawStatus7d != "" {
+		sample.Status7d = sample.RawStatus7d
+		sample.Header7dOK = true
+	}
+	return sample
+}
+
+func parseFiveHourUtilization(headers http.Header) (util float64, status string, ok bool) {
+	sample := parseQuotaSample(pluginapi.UsageRecord{ResponseHeaders: headers}, time.Time{}, false)
+	return sample.Util5h, sample.Status5h, sample.HeaderOK
+}
+
+func appendQuotaSampleLocked(sample quotaSample) {
+	if !sample.HeaderOK && !sample.Failed && sample.Units <= 0 {
+		return
+	}
+	quotaSamples = append(quotaSamples, sample)
+	if extra := len(quotaSamples) - maxQuotaSamples; extra > 0 {
+		quotaSamples = append([]quotaSample(nil), quotaSamples[extra:]...)
+	}
+}
+
+func listQuotaSamples() []quotaSample {
+	mu.Lock()
+	defer mu.Unlock()
+	out := make([]quotaSample, len(quotaSamples))
+	for i := range quotaSamples {
+		out[len(quotaSamples)-1-i] = quotaSamples[i]
+	}
+	return out
 }
 
 func estimatePingUnits(item session) int64 {
@@ -166,34 +280,39 @@ func recordUsage(rec pluginapi.UsageRecord) {
 		now = time.Now()
 	}
 	units := weightedUnits(rec.Model, rec.Detail)
-	util, status, headerOK := parseFiveHourUtilization(rec.ResponseHeaders)
+	sample := parseQuotaSample(rec, now, false)
+	if !rec.Failed {
+		sample.Units = units
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	keep := keepaliveActive > 0
-	if headerOK {
-		if fiveHourUtilOK && util+0.05 < fiveHourUtil {
+	sample.Keepalive = keep
+	appendQuotaSampleLocked(sample)
+	if sample.HeaderOK {
+		if fiveHourUtilOK && sample.Util5h+0.05 < fiveHourUtil {
 			// Window rolled over; previous units-per-percent no longer applies.
 			unitsPerUtil = 0
 			lastCalibOK = false
 			lastCalibUtil = 0
 		}
-		if units > 0 && !rec.Failed && !keep && lastCalibOK && util > lastCalibUtil {
-			delta := util - lastCalibUtil
+		if units > 0 && !rec.Failed && !keep && lastCalibOK && sample.Util5h > lastCalibUtil {
+			delta := sample.Util5h - lastCalibUtil
 			if delta >= 0.005 {
-				sample := float64(units) / delta
+				calib := float64(units) / delta
 				if unitsPerUtil <= 0 {
-					unitsPerUtil = sample
+					unitsPerUtil = calib
 				} else {
-					unitsPerUtil = unitsPerUtil*0.65 + sample*0.35
+					unitsPerUtil = unitsPerUtil*0.65 + calib*0.35
 				}
 			}
 		}
-		fiveHourUtil = util
-		fiveHourStatus = status
+		fiveHourUtil = sample.Util5h
+		fiveHourStatus = sample.Status5h
 		fiveHourUtilOK = true
-		lastCalibUtil = util
+		lastCalibUtil = sample.Util5h
 		lastCalibOK = true
-		if status == "rejected" || util >= 0.995 {
+		if sample.Status5h == "rejected" || sample.Util5h >= 0.995 {
 			until := now.Add(20 * time.Minute)
 			if limitHitUntil.Before(until) {
 				limitHitUntil = until

@@ -26,6 +26,7 @@ type statusView struct {
 	NextPingAgo  string
 	PingError    string
 	Now          string
+	Version      string
 	BudgetWindow string
 	BudgetChat   string
 	BudgetKeep   string
@@ -36,6 +37,24 @@ type statusView struct {
 	BudgetNote   string
 	ChatBlocked  bool
 	KeepPaused   bool
+	HasQuotaLog  bool
+	QuotaLog     []quotaRow
+}
+
+type quotaRow struct {
+	At         string
+	Ago        string
+	Kind       string
+	Model      string
+	HeaderOK   bool
+	Util5h     string
+	Status5h   string
+	Reset5h    string
+	Util7d     string
+	Status7d   string
+	Unified    string
+	Raw        string
+	RowClass   string
 }
 
 type sessionRow struct {
@@ -92,6 +111,12 @@ func buildStatusView(st statusPage) statusView {
 		BudgetBlock:  fmt.Sprintf("%d%%", st.Budget.BlockAtPercent),
 		ChatBlocked:  st.Budget.ChatBlocked,
 		KeepPaused:   st.Budget.KeepalivePaused,
+		Version:      st.Version,
+		HasQuotaLog:  len(st.QuotaLog) > 0,
+	}
+	view.QuotaLog = make([]quotaRow, 0, len(st.QuotaLog))
+	for _, sample := range st.QuotaLog {
+		view.QuotaLog = append(view.QuotaLog, buildQuotaRow(st.Now, sample))
 	}
 	switch {
 	case st.Budget.ChatBlocked:
@@ -179,6 +204,67 @@ func toggleHref(id string, enable bool) string {
 		on = "1"
 	}
 	return "?toggle=" + id + "&on=" + on
+}
+
+func buildQuotaRow(now time.Time, sample quotaSample) quotaRow {
+	row := quotaRow{
+		At:       formatTime(sample.At),
+		Ago:      formatAgo(now, sample.At),
+		Model:    dash(sample.Model),
+		HeaderOK: sample.HeaderOK,
+		Util5h:   "未读到",
+		Status5h: "—",
+		Reset5h:  dash(formatTime(sample.Reset5h)),
+		Util7d:   "—",
+		Status7d: dash(sample.Status7d),
+		Unified:  dash(sample.UnifiedStatus),
+		RowClass: "miss",
+	}
+	switch {
+	case sample.Failed:
+		row.Kind = "失败"
+		row.RowClass = "fail"
+	case sample.Keepalive:
+		row.Kind = "保活"
+	default:
+		row.Kind = "对话"
+	}
+	if sample.HeaderOK {
+		row.Util5h = fmt.Sprintf("%.1f%%", sample.Util5h*100)
+		row.Status5h = dash(sample.Status5h)
+		row.RowClass = "ok"
+		if sample.Failed || sample.Status5h == "rejected" {
+			row.RowClass = "fail"
+		}
+	}
+	if sample.Header7dOK {
+		row.Util7d = fmt.Sprintf("%.1f%%", sample.Util7d*100)
+	}
+	var raw []string
+	if sample.RawUtil5h != "" {
+		raw = append(raw, "5h-utilization="+sample.RawUtil5h)
+	}
+	if sample.RawStatus5h != "" {
+		raw = append(raw, "5h-status="+sample.RawStatus5h)
+	}
+	if sample.RawReset5h != "" {
+		raw = append(raw, "5h-reset="+sample.RawReset5h)
+	}
+	if sample.RawUtil7d != "" {
+		raw = append(raw, "7d-utilization="+sample.RawUtil7d)
+	}
+	if sample.RawStatus7d != "" {
+		raw = append(raw, "7d-status="+sample.RawStatus7d)
+	}
+	if sample.UnifiedStatus != "" {
+		raw = append(raw, "unified="+sample.UnifiedStatus)
+	}
+	if len(raw) == 0 {
+		row.Raw = "响应头里没有 Anthropic-Ratelimit-Unified-5h-*"
+	} else {
+		row.Raw = strings.Join(raw, " · ")
+	}
+	return row
 }
 
 func dash(v string) string {
@@ -402,6 +488,28 @@ h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em;
   color: var(--muted);
   font-size: 13px;
 }
+.quota {
+  margin: 18px 0 8px;
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 14px 8px;
+}
+.quota h2 { margin: 0 0 4px; font-size: 15px; font-weight: 650; }
+.quota .sub { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.quota-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+.quota-table th {
+  text-align: left; color: var(--muted); font-weight: 500;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+  padding: 6px 8px; border-bottom: 1px solid var(--line);
+}
+.quota-table td { padding: 8px; border-bottom: 1px solid rgba(42,49,64,.65); vertical-align: top; }
+.quota-table tr:last-child td { border-bottom: 0; }
+.quota-table .raw { color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+.quota-table tr.ok td.util { color: var(--ok); font-weight: 650; }
+.quota-table tr.miss td.util { color: var(--warn); }
+.quota-table tr.fail td.util { color: var(--err); font-weight: 650; }
+.scroll { overflow-x: auto; }
 .foot { margin-top: 18px; color: var(--muted); font-size: 12px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: #11141a; padding: .12rem .35rem; border-radius: 6px; }
 </style>
@@ -431,6 +539,33 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>
   {{end}}
+  <section class="quota">
+    <h2>额度记录</h2>
+    <p class="sub">每次 Claude 响应回来后，插件从 HTTP 头解析的结果。用来确认有没有真正读到 <code>Anthropic-Ratelimit-Unified-5h-*</code>。最新在上，最多 30 条；CPA 重启后清空。</p>
+    {{if .HasQuotaLog}}
+    <div class="scroll">
+      <table class="quota-table">
+        <thead>
+          <tr><th>时间</th><th>来源</th><th>5 小时</th><th>状态</th><th>7 天</th><th>原始头</th></tr>
+        </thead>
+        <tbody>
+          {{range .QuotaLog}}
+          <tr class="{{.RowClass}}">
+            <td>{{.At}}<div class="raw">{{.Ago}} · {{.Kind}} · {{.Model}}</div></td>
+            <td>{{.Kind}}</td>
+            <td class="util">{{.Util5h}}</td>
+            <td>{{.Status5h}}</td>
+            <td>{{.Util7d}}{{if ne .Status7d "—"}}<div class="raw">{{.Status7d}}</div>{{end}}</td>
+            <td class="raw">{{.Raw}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="sub">还没有用量回调。用 Claude Code 走 CPA 正常聊一轮后，这里应出现 5h-utilization / 5h-status。如果只有「未读到」，说明这次响应没带用量头。</p>
+    {{end}}
+  </section>
   {{if not .HasSessions}}
   <div class="empty">把 Claude Code 指到 CPA 的 <code>127.0.0.1:8317</code>，并设置 <code>promptCacheTtl: "1h"</code>。正常完成一轮对话后刷新本页。插件会跳过 <code>count_tokens</code>。</div>
   {{else}}
@@ -457,7 +592,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
   {{if .PingError}}
   <div class="error">上一轮保活错误：{{.PingError}}</div>
   {{end}}
-  <p class="foot">数据每 15 秒静默更新 · {{.Now}} · 不会显示 prompt 正文</p>
+  <p class="foot">数据每 15 秒静默更新 · {{.Now}} · {{.Version}} · 不会显示 prompt 正文</p>
 </main>
 <script>
 (function () {

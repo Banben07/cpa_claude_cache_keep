@@ -68,7 +68,10 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
-const pluginID = "claude-cache-keepalive"
+const (
+	pluginID      = "claude-cache-keepalive"
+	pluginVersion = "0.4.4"
+)
 
 type envelope struct {
 	OK     bool            `json:"ok"`
@@ -110,6 +113,8 @@ type statusPage struct {
 	NextPingAt    time.Time
 	Now           time.Time
 	Budget        budgetSnapshot
+	QuotaLog      []quotaSample
+	Version       string
 }
 
 type hostModelExecutionRequest struct {
@@ -220,7 +225,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.4.3",
+			Version:          pluginVersion,
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
@@ -503,6 +508,8 @@ func currentStatus() statusPage {
 	}
 	mu.Unlock()
 	page.Budget = currentBudget(now)
+	page.QuotaLog = listQuotaSamples()
+	page.Version = pluginVersion
 	page.Sessions = listSessions()
 	for _, item := range page.Sessions {
 		if !item.Enabled {
