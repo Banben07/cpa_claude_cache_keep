@@ -161,7 +161,29 @@ func subagentKind(headers http.Header, body []byte) string {
 	return ""
 }
 
-func sessionKey(model string, body []byte) string {
+func sessionKey(model string, headers http.Header, body []byte) string {
+	if sid := claudeSessionID(headers, body); sid != "" {
+		return sidSessionKey(sid)
+	}
+	return contentSessionKey(model, body)
+}
+
+func claudeSessionID(headers http.Header, body []byte) string {
+	if sid := strings.TrimSpace(headerGetCI(headers, "X-Claude-Code-Session-Id")); sid != "" {
+		return sid
+	}
+	if sid := strings.TrimSpace(gjson.GetBytes(body, "metadata.session_id").String()); sid != "" {
+		return sid
+	}
+	return ""
+}
+
+func sidSessionKey(sid string) string {
+	sum := sha256.Sum256([]byte("cc-session\n" + strings.TrimSpace(sid)))
+	return hex.EncodeToString(sum[:8])
+}
+
+func contentSessionKey(model string, body []byte) string {
 	first := firstUserText(body)
 	system := systemText(body)
 	if len(system) > 2048 {
@@ -169,6 +191,30 @@ func sessionKey(model string, body []byte) string {
 	}
 	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(model)) + "\n" + first + "\n" + system))
 	return hex.EncodeToString(sum[:8])
+}
+
+func looksLikeCompact(text string) bool {
+	t := strings.ToLower(strings.TrimSpace(text))
+	if t == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"this session is being continued from a previous conversation",
+		"conversation is summarized below",
+		"the conversation summary",
+		"please continue the conversation from where it left off",
+		"ran out of context",
+		"compacted conversation",
+		"此会话从之前的对话继续",
+		"对话摘要如下",
+		"上下文已满",
+		"会话因上下文",
+	} {
+		if strings.Contains(t, marker) {
+			return true
+		}
+	}
+	return strings.Contains(t, "<summary>") && strings.Contains(t, "continue")
 }
 
 func sessionLabel(body []byte) string {

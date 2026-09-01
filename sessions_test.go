@@ -23,11 +23,11 @@ func TestSessionKeyStableAndDistinct(t *testing.T) {
 	system := "same-system-prefix"
 	a := claudeBody("第一段任务", system)
 	b := claudeBody("另一段完全不同的任务", system)
-	if sessionKey("claude-opus-5", a) == sessionKey("claude-opus-5", b) {
+	if sessionKey("claude-opus-5", nil, a) == sessionKey("claude-opus-5", nil, b) {
 		t.Fatal("different first user messages should not share a session")
 	}
 	grown := []byte(`{"model":"claude-opus-5","max_tokens":16000,"messages":[{"role":"user","content":"第一段任务"},{"role":"assistant","content":"ok"},{"role":"user","content":"继续"}],"system":[{"type":"text","text":"same-system-prefix","cache_control":{"ttl":"1h"}}]}`)
-	if sessionKey("claude-opus-5", a) != sessionKey("claude-opus-5", grown) {
+	if sessionKey("claude-opus-5", nil, a) != sessionKey("claude-opus-5", nil, grown) {
 		t.Fatal("later turns should keep the same session key")
 	}
 }
@@ -340,5 +340,62 @@ func TestDueSnapshotsUsesLastRequestNotLastPing(t *testing.T) {
 	due = dueSnapshots(now, 50*time.Minute)
 	if len(due) != 1 {
 		t.Fatalf("expected due after last request + interval, got %d", len(due))
+	}
+}
+
+func TestClaudeSessionIDKeepsCompactInSameRow(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	h := http.Header{"X-Claude-Code-Session-Id": []string{"sess-keep-1"}}
+	upsertSession("claude-opus-5", "claude", "claude", h, claudeBody("写插件", "sys"))
+	compact := claudeBody("This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:\n- wrote a plugin", "sys-after-compact")
+	upsertSession("claude-opus-5", "claude", "claude", h, compact)
+	got := listSessions()
+	if len(got) != 1 {
+		t.Fatalf("compact must not open a second session, got %d: %+v", len(got), got)
+	}
+	if got[0].Label != "写插件" {
+		t.Fatalf("compact should keep the original label, got %q", got[0].Label)
+	}
+	if got[0].Info.FirstUser == "写插件" {
+		t.Fatal("snapshot body should update to the compacted prompt")
+	}
+}
+
+func TestCompactWithoutSessionIDMergesLatest(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("原来的任务", "sys"))
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("This session is being continued from a previous conversation that ran out of context. Please continue the conversation from where it left off.", "new-sys"))
+	got := listSessions()
+	if len(got) != 1 {
+		t.Fatalf("compact without session id should merge into latest same-model session, got %d", len(got))
+	}
+	if got[0].Label != "原来的任务" {
+		t.Fatalf("label=%q", got[0].Label)
+	}
+}
+
+func TestDifferentClaudeSessionIDsStayDistinct(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	a := http.Header{"X-Claude-Code-Session-Id": []string{"sess-a"}}
+	b := http.Header{"X-Claude-Code-Session-Id": []string{"sess-b"}}
+	upsertSession("claude-opus-5", "claude", "claude", a, claudeBody("任务甲", "sys"))
+	upsertSession("claude-opus-5", "claude", "claude", b, claudeBody("任务乙", "sys"))
+	if len(listSessions()) != 2 {
+		t.Fatalf("got %d", len(listSessions()))
+	}
+}
+
+func TestSessionKeyPrefersClaudeSessionID(t *testing.T) {
+	h := http.Header{"X-Claude-Code-Session-Id": []string{"same-session"}}
+	a := claudeBody("第一段", "sys")
+	b := claudeBody("This session is being continued from a previous conversation that ran out of context.", "other-sys")
+	if sessionKey("claude-opus-5", h, a) != sessionKey("claude-opus-5", h, b) {
+		t.Fatal("same Claude Code session id should keep one key across compact")
+	}
+	if sessionKey("claude-opus-5", nil, a) == sessionKey("claude-opus-5", nil, b) {
+		t.Fatal("without session id, compact text must not collide with the original first message")
 	}
 }

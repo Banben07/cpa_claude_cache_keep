@@ -32,10 +32,12 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 		return
 	}
 	kind := subagentKind(headers, body)
-	id := sessionKey(model, body)
 	now := time.Now()
 	info := inspectBody(body)
 	label := sessionLabel(body)
+	compact := looksLikeCompact(firstUserText(body))
+	sid := claudeSessionID(headers, body)
+	contentID := contentSessionKey(model, body)
 	mu.Lock()
 	defer mu.Unlock()
 	if kind != "" {
@@ -45,8 +47,9 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 		lastSubagentLabel = label
 		return
 	}
+	id := resolveSessionIDLocked(model, sid, contentID, compact)
 	if existing, ok := sessions[id]; ok {
-		if !existing.CustomLabel {
+		if !existing.CustomLabel && !(compact && strings.TrimSpace(existing.Label) != "") {
 			existing.Label = label
 		}
 		existing.Model = model
@@ -77,6 +80,78 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 		LastSeen:     now,
 		Info:         info,
 	}
+}
+
+func resolveSessionIDLocked(model, sid, contentID string, compact bool) string {
+	id := contentID
+	if sid != "" {
+		id = sidSessionKey(sid)
+	}
+	if _, ok := sessions[id]; ok {
+		return id
+	}
+	if sid != "" {
+		if old, ok := sessions[contentID]; ok && contentID != id {
+			rekeySessionLocked(old, id)
+			return id
+		}
+	}
+	if compact {
+		if prev := latestSameModelLocked(model); prev != nil && prev.ID != id {
+			if sid != "" {
+				rekeySessionLocked(prev, id)
+				return id
+			}
+			return prev.ID
+		}
+	}
+	return id
+}
+
+func rekeySessionLocked(item *session, newID string) {
+	if item == nil || newID == "" || item.ID == newID {
+		return
+	}
+	oldID := item.ID
+	if dest, ok := sessions[newID]; ok && dest != item {
+		if !dest.CustomLabel && item.CustomLabel {
+			dest.CustomLabel = true
+			dest.Label = item.Label
+		} else if !dest.CustomLabel && looksLikeCompact(dest.Label) && strings.TrimSpace(item.Label) != "" {
+			dest.Label = item.Label
+		}
+		if item.Enabled {
+			dest.Enabled = true
+		}
+		if dest.LastPingAt.Before(item.LastPingAt) {
+			dest.LastPingAt = item.LastPingAt
+		}
+		delete(sessions, oldID)
+		return
+	}
+	delete(sessions, oldID)
+	item.ID = newID
+	if sessions == nil {
+		sessions = map[string]*session{}
+	}
+	sessions[newID] = item
+}
+
+func latestSameModelLocked(model string) *session {
+	want := strings.ToLower(strings.TrimSpace(model))
+	var best *session
+	for _, item := range sessions {
+		if item == nil {
+			continue
+		}
+		if strings.ToLower(strings.TrimSpace(item.Model)) != want {
+			continue
+		}
+		if best == nil || item.LastSeen.After(best.LastSeen) {
+			best = item
+		}
+	}
+	return best
 }
 
 func setSessionEnabled(id string, enabled bool) bool {

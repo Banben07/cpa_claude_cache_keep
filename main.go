@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.7.0"
+	pluginVersion = "0.8.0"
 )
 
 type envelope struct {
@@ -298,7 +298,7 @@ func handleInterceptBefore(raw []byte) ([]byte, error) {
 	if !isClaudeUpstream(req.ToFormat, req.Model) || !isKeepaliveCandidate(req.Body) {
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
 	}
-	if shouldBlockChat(time.Now(), req.Model, req.Body) {
+	if shouldBlockChat(time.Now(), req.Model, req.Headers, req.Body) {
 		return okEnvelope(chatGuardResponse())
 	}
 	return okEnvelope(pluginapi.RequestInterceptResponse{})

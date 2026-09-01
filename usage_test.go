@@ -452,7 +452,7 @@ func TestOvershootPredictionBlocksLargeChat(t *testing.T) {
 	fiveHourUtil = 0.90
 	fiveHourUtilOK = true
 	unitsPerUtil = 100000
-	id := sessionKey("claude-opus-5", body)
+	id := sessionKey("claude-opus-5", nil, body)
 	sessions[id] = &session{ID: id, Model: "claude-opus-5", Body: body, LastChatUnits: 15000}
 	mu.Unlock()
 	if !terminatedChat(t, body) {
@@ -468,7 +468,7 @@ func TestOvershootAllowsSmallFollowUp(t *testing.T) {
 	fiveHourUtil = 0.90
 	fiveHourUtilOK = true
 	unitsPerUtil = 100000
-	id := sessionKey("claude-opus-5", body)
+	id := sessionKey("claude-opus-5", nil, body)
 	sessions[id] = &session{ID: id, Model: "claude-opus-5", Body: body, LastChatUnits: 1000}
 	mu.Unlock()
 	if terminatedChat(t, body) {

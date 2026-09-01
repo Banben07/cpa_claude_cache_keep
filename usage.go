@@ -359,8 +359,8 @@ func estimateBodyUnits(model string, body []byte) int64 {
 	return weightedUnits(model, pluginapi.UsageDetail{InputTokens: tokens, OutputTokens: 1})
 }
 
-func estimateNextChatUnitsLocked(model string, body []byte) int64 {
-	if item := sessions[sessionKey(model, body)]; item != nil && item.LastChatUnits > 0 {
+func estimateNextChatUnitsLocked(model string, headers http.Header, body []byte) int64 {
+	if item := sessions[sessionKey(model, headers, body)]; item != nil && item.LastChatUnits > 0 {
 		return item.LastChatUnits
 	}
 	return estimateBodyUnits(model, body)
@@ -370,7 +370,7 @@ func estimateNextChatUnitsLocked(model string, body []byte) int64 {
 // when the last known 5h utilization already hit the reserve line, or when
 // this request is predicted to land past that line (so a fat prompt at 93%
 // does not punch through 100% and start a streak of upstream 429s).
-func shouldBlockChat(now time.Time, model string, body []byte) bool {
+func shouldBlockChat(now time.Time, model string, headers http.Header, body []byte) bool {
 	mu.Lock()
 	defer mu.Unlock()
 	snap := currentBudgetLocked(now)
@@ -380,7 +380,7 @@ func shouldBlockChat(now time.Time, model string, body []byte) bool {
 	if !snap.GuardChat || !fiveHourUtilOK || unitsPerUtil <= 0 {
 		return false
 	}
-	est := estimateNextChatUnitsLocked(model, body)
+	est := estimateNextChatUnitsLocked(model, headers, body)
 	if est <= 0 {
 		return false
 	}
