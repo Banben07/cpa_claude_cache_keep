@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.4.9"
+	pluginVersion = "0.5.0"
 )
 
 type envelope struct {
@@ -101,23 +101,23 @@ type registrationCapabilities struct {
 }
 
 type statusPage struct {
-	Sessions      []session
-	EnabledCount  int
-	IntervalMin   int
-	MaxTokens     int
-	MaxSessions   int
-	IdleEvictMin  int
-	LastPingAt    time.Time
-	LastPingError string
-	LoopStartedAt time.Time
-	NextPingAt    time.Time
-	Now           time.Time
-	Budget        budgetSnapshot
-	QuotaLog         []quotaSample
-	Version          string
-	SubagentSkipped  int
-	LastSubagentKind string
-	LastSubagentAt   time.Time
+	Sessions          []session
+	EnabledCount      int
+	IntervalMin       int
+	MaxTokens         int
+	MaxSessions       int
+	IdleEvictMin      int
+	LastPingAt        time.Time
+	LastPingError     string
+	LoopStartedAt     time.Time
+	NextPingAt        time.Time
+	Now               time.Time
+	Budget            budgetSnapshot
+	QuotaLog          []quotaSample
+	Version           string
+	SubagentSkipped   int
+	LastSubagentKind  string
+	LastSubagentAt    time.Time
 	LastSubagentLabel string
 }
 
@@ -127,18 +127,18 @@ type hostModelExecutionRequest struct {
 }
 
 var (
-	mu            sync.Mutex
-	cfg           = defaultConfig()
-	sessions      = map[string]*session{}
-	lastPingAt    time.Time
-	lastErr       string
-	loopStartedAt time.Time
-	pinging       bool
-	stopCh        chan struct{}
-	subagentSkipped     int
-	lastSubagentAt      time.Time
-	lastSubagentKind    string
-	lastSubagentLabel   string
+	mu                sync.Mutex
+	cfg               = defaultConfig()
+	sessions          = map[string]*session{}
+	lastPingAt        time.Time
+	lastErr           string
+	loopStartedAt     time.Time
+	pinging           bool
+	stopCh            chan struct{}
+	subagentSkipped   int
+	lastSubagentAt    time.Time
+	lastSubagentKind  string
+	lastSubagentLabel string
 )
 
 func main() {}
@@ -242,7 +242,7 @@ func pluginRegistration() registration {
 				{Name: "max_sessions", Type: pluginapi.ConfigFieldTypeInteger, Description: "Max remembered conversations. Default 8."},
 				{Name: "idle_evict_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Drop unchecked sessions after this idle time. Default 180. 0 keeps them until replaced."},
 				{Name: "window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Usage window matching Claude's 5-hour session limit. Default 300."},
-				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat when this percent of the 5-hour window remains. Default 1; keepalive is max_tokens=1 plus cache reads."},
+				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat when this percent of the 5-hour window remains. Default 0: chat runs until 100% or a turn would punch through. Raise to hold a slice for keepalive."},
 				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Fallback weighted budget if upstream 5h headers are missing. 0 uses Anthropic utilization headers."},
 				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Block new Claude chat through CPA once the 5-hour window hits the reserve line. Default true."},
 			},
@@ -509,12 +509,12 @@ func currentStatus() statusPage {
 	now := time.Now()
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	page := statusPage{
-		IntervalMin:   cfg.IntervalMinutes,
-		MaxTokens:     cfg.MaxTokens,
-		MaxSessions:   cfg.MaxSessions,
-		IdleEvictMin:  cfg.IdleEvictMinutes,
-		LastPingAt:    lastPingAt,
-		LastPingError: lastErr,
+		IntervalMin:       cfg.IntervalMinutes,
+		MaxTokens:         cfg.MaxTokens,
+		MaxSessions:       cfg.MaxSessions,
+		IdleEvictMin:      cfg.IdleEvictMinutes,
+		LastPingAt:        lastPingAt,
+		LastPingError:     lastErr,
 		LoopStartedAt:     loopStartedAt,
 		Now:               now,
 		SubagentSkipped:   subagentSkipped,

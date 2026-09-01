@@ -9,53 +9,54 @@ import (
 )
 
 type statusView struct {
-	State        string
-	StateLabel   string
-	StateHint    string
-	IntervalMin  int
-	MaxTokens    int
-	MaxSessions  int
-	IdleEvictMin int
-	SessionCount int
-	EnabledCount int
-	HasSessions  bool
-	Sessions     []sessionRow
-	LastPing     string
-	LastPingAgo  string
-	NextPing     string
-	NextPingAgo  string
-	PingError    string
-	Now          string
-	Version      string
-	BudgetWindow string
-	BudgetChat   string
-	BudgetKeep   string
-	BudgetCap    string
-	BudgetRemain string
-	BudgetUsed   string
-	BudgetBlock  string
-	BudgetNote   string
-	ChatBlocked  bool
-	KeepPaused   bool
-	HasQuotaLog        bool
-	QuotaLog           []quotaRow
-	SubagentNote       string
+	State          string
+	StateLabel     string
+	StateHint      string
+	IntervalMin    int
+	MaxTokens      int
+	MaxSessions    int
+	IdleEvictMin   int
+	SessionCount   int
+	EnabledCount   int
+	HasSessions    bool
+	Sessions       []sessionRow
+	LastPing       string
+	LastPingAgo    string
+	NextPing       string
+	NextPingAgo    string
+	PingError      string
+	Now            string
+	Version        string
+	BudgetWindow   string
+	BudgetChat     string
+	BudgetKeep     string
+	BudgetCap      string
+	BudgetRemain   string
+	BudgetUsed     string
+	BudgetBlock    string
+	BudgetNote     string
+	ReservePercent int
+	ChatBlocked    bool
+	KeepPaused     bool
+	HasQuotaLog    bool
+	QuotaLog       []quotaRow
+	SubagentNote   string
 }
 
 type quotaRow struct {
-	At         string
-	Ago        string
-	Kind       string
-	Model      string
-	HeaderOK   bool
-	Util5h     string
-	Status5h   string
-	Reset5h    string
-	Util7d     string
-	Status7d   string
-	Unified    string
-	Raw        string
-	RowClass   string
+	At       string
+	Ago      string
+	Kind     string
+	Model    string
+	HeaderOK bool
+	Util5h   string
+	Status5h string
+	Reset5h  string
+	Util7d   string
+	Status7d string
+	Unified  string
+	Raw      string
+	RowClass string
 }
 
 type sessionRow struct {
@@ -90,30 +91,31 @@ func renderStatusHTML() string {
 
 func buildStatusView(st statusPage) statusView {
 	view := statusView{
-		IntervalMin:  st.IntervalMin,
-		MaxTokens:    st.MaxTokens,
-		MaxSessions:  st.MaxSessions,
-		IdleEvictMin: st.IdleEvictMin,
-		SessionCount: len(st.Sessions),
-		EnabledCount: st.EnabledCount,
-		HasSessions:  len(st.Sessions) > 0,
-		LastPing:     formatTime(st.LastPingAt),
-		LastPingAgo:  formatAgo(st.Now, st.LastPingAt),
-		NextPing:     formatTime(st.NextPingAt),
-		NextPingAgo:  formatUntil(st.Now, st.NextPingAt),
-		PingError:    st.LastPingError,
-		Now:          st.Now.UTC().Format("15:04:05 UTC"),
-		BudgetWindow: fmt.Sprintf("%d 小时", (st.Budget.WindowMin+59)/60),
-		BudgetChat:   formatUnits(st.Budget.ChatUnits),
-		BudgetKeep:   formatUnits(st.Budget.KeepaliveUnits),
-		BudgetCap:    formatUnits(st.Budget.KeepaliveCap),
-		BudgetRemain: formatUnits(st.Budget.KeepaliveRemain),
-		BudgetUsed:   formatPercent(st.Budget.UsedPercent, st.Budget.UsedKnown),
-		BudgetBlock:  fmt.Sprintf("%d%%", st.Budget.BlockAtPercent),
-		ChatBlocked:  st.Budget.ChatBlocked,
-		KeepPaused:   st.Budget.KeepalivePaused,
-		Version:      st.Version,
-		HasQuotaLog:  len(st.QuotaLog) > 0,
+		IntervalMin:    st.IntervalMin,
+		MaxTokens:      st.MaxTokens,
+		MaxSessions:    st.MaxSessions,
+		IdleEvictMin:   st.IdleEvictMin,
+		SessionCount:   len(st.Sessions),
+		EnabledCount:   st.EnabledCount,
+		HasSessions:    len(st.Sessions) > 0,
+		LastPing:       formatTime(st.LastPingAt),
+		LastPingAgo:    formatAgo(st.Now, st.LastPingAt),
+		NextPing:       formatTime(st.NextPingAt),
+		NextPingAgo:    formatUntil(st.Now, st.NextPingAt),
+		PingError:      st.LastPingError,
+		Now:            st.Now.UTC().Format("15:04:05 UTC"),
+		BudgetWindow:   fmt.Sprintf("%d 小时", (st.Budget.WindowMin+59)/60),
+		BudgetChat:     formatUnits(st.Budget.ChatUnits),
+		BudgetKeep:     formatUnits(st.Budget.KeepaliveUnits),
+		BudgetCap:      formatUnits(st.Budget.KeepaliveCap),
+		BudgetRemain:   formatUnits(st.Budget.KeepaliveRemain),
+		BudgetUsed:     formatPercent(st.Budget.UsedPercent, st.Budget.UsedKnown),
+		BudgetBlock:    fmt.Sprintf("%d%%", st.Budget.BlockAtPercent),
+		ReservePercent: st.Budget.ReservePercent,
+		ChatBlocked:    st.Budget.ChatBlocked,
+		KeepPaused:     st.Budget.KeepalivePaused,
+		Version:        st.Version,
+		HasQuotaLog:    len(st.QuotaLog) > 0,
 	}
 	if st.SubagentSkipped > 0 {
 		view.SubagentNote = fmt.Sprintf("已跳过 %d 次子代理请求，不进保活名单。最近：%s %s（%s）", st.SubagentSkipped, dash(st.LastSubagentKind), st.LastSubagentLabel, formatAgo(st.Now, st.LastSubagentAt))
@@ -124,15 +126,31 @@ func buildStatusView(st statusPage) statusView {
 	}
 	switch {
 	case st.Budget.ChatBlocked:
-		view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		if st.Budget.ReservePercent <= 0 {
+			view.BudgetNote = "CPA 对话已停：5 小时额度用尽或这一发会打穿。"
+		} else {
+			view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		}
 	case st.Budget.KeepalivePaused:
 		view.BudgetNote = st.Budget.PauseReason
 	case st.Budget.UsedKnown:
-		view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。CPA 对话会在 %d%% 停住，把最后 %d%% 留给保活。", st.Budget.UsedPercent, st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		if st.Budget.ReservePercent <= 0 {
+			view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。对话用到 100%%（或这一发会打穿）才拦，不为保活另留百分比。", st.Budget.UsedPercent)
+		} else {
+			view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。CPA 对话会在 %d%% 停住，把最后 %d%% 留给保活。", st.Budget.UsedPercent, st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		}
 	case st.Budget.Budget > 0:
-		view.BudgetNote = fmt.Sprintf("还没读到上游 5h 用量头，先按加权预算拦对话，预留 %d%% 给保活。", st.Budget.ReservePercent)
+		if st.Budget.ReservePercent <= 0 {
+			view.BudgetNote = "还没读到上游 5h 用量头，先按加权预算拦会打穿窗口的对话。"
+		} else {
+			view.BudgetNote = fmt.Sprintf("还没读到上游 5h 用量头，先按加权预算拦对话，预留 %d%% 给保活。", st.Budget.ReservePercent)
+		}
 	default:
-		view.BudgetNote = fmt.Sprintf("等下一轮 CPA 请求带上 5h 用量头后，会在 %d%% 拦住对话，把最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		if st.Budget.ReservePercent <= 0 {
+			view.BudgetNote = "等下一轮 CPA 请求带上 5h 用量头后，对话用到 100%（或这一发会打穿）才拦。"
+		} else {
+			view.BudgetNote = fmt.Sprintf("等下一轮 CPA 请求带上 5h 用量头后，会在 %d%% 拦住对话，把最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		}
 	}
 	interval := time.Duration(st.IntervalMin) * time.Minute
 	view.Sessions = make([]sessionRow, 0, len(st.Sessions))
@@ -547,11 +565,15 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">最近一次到期</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
   <div class="stats">
-    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>CPA 对话停在 {{.BudgetBlock}}</small></div></div>
+    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>{{if eq .ReservePercent 0}}对话用到 100% 才停{{else}}CPA 对话停在 {{.BudgetBlock}}{{end}}</small></div></div>
     <div class="stat"><div class="k">CPA 对话 / 保活</div><div class="v">{{.BudgetChat}} / {{.BudgetKeep}}<small>{{.BudgetNote}}</small></div></div>
   </div>
   {{if .ChatBlocked}}
+  {{if eq .ReservePercent 0}}
+  <div class="warn">CPA 上的新对话已拦住：5 小时额度用尽，或这一发会打穿窗口。窗口回落后会自动恢复。</div>
+  {{else}}
   <div class="warn">CPA 上的新对话请求已被拦住，把 5 小时额度留给保活。窗口回落后会自动恢复。</div>
+  {{end}}
   {{end}}
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>
@@ -581,7 +603,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
+  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。{{if eq .ReservePercent 0}}CPA 对话用到 100%（或这一发预估会打穿）才停，不为保活另留百分比。{{else}}CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。{{end}} Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
   {{if .SubagentNote}}
   <p class="hint">{{.SubagentNote}}</p>
   {{end}}

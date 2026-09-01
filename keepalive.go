@@ -64,7 +64,7 @@ func parseConfig(raw []byte) pluginConfig {
 	if cfg.WindowMinutes > 24*60 {
 		cfg.WindowMinutes = 24 * 60
 	}
-	if cfg.ReservePercent <= 0 {
+	if cfg.ReservePercent < 0 {
 		cfg.ReservePercent = defaultReservePct
 	}
 	if cfg.ReservePercent > 40 {
