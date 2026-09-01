@@ -76,37 +76,46 @@ func TestNextPingAt(t *testing.T) {
 }
 
 func TestRenderStatusHTMLEmptyAndArmed(t *testing.T) {
+	resetSessionsForTest()
 	empty := renderStatusHTML()
-	if !strings.Contains(empty, "等待快照") {
+	if !strings.Contains(empty, "等待对话") {
 		t.Fatalf("empty page missing status: %s", empty)
 	}
-	mu.Lock()
-	last = snapshot{
-		Model:    "claude-opus-5",
-		ToFormat: "claude",
-		Body:     []byte(`{"model":"claude-opus-5","max_tokens":16000,"messages":[{"role":"user","content":"hi"}],"system":[{"cache_control":{"ttl":"1h"}}]}`),
-		SavedAt:  time.Now(),
-	}
+
 	loopStartedAt = time.Now()
-	cfg = defaultConfig()
-	mu.Unlock()
-	defer func() {
-		mu.Lock()
-		last = snapshot{}
-		loopStartedAt = time.Time{}
-		lastPingAt = time.Time{}
-		lastErr = ""
-		mu.Unlock()
-	}()
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("写一篇论文大纲", "opus-sys"))
+	upsertSession("claude-sonnet-5", "claude", "claude", nil, claudeBody("改这段文案", "sonnet-sys"))
+	t.Cleanup(resetSessionsForTest)
+
 	html := renderStatusHTML()
 	if !strings.Contains(html, "已记录，等待保活") {
 		t.Fatalf("armed page missing status: %s", html)
 	}
-	if !strings.Contains(html, "claude-opus-5") {
-		t.Fatal("missing model")
+	if !strings.Contains(html, "写一篇论文大纲") {
+		t.Fatal("missing first session label")
+	}
+	if !strings.Contains(html, "改这段文案") {
+		t.Fatal("missing second session label")
+	}
+	if !strings.Contains(html, "claude-opus-5") || !strings.Contains(html, "claude-sonnet-5") {
+		t.Fatal("missing models")
 	}
 	if !strings.Contains(html, "1h") {
 		t.Fatal("missing ttl")
+	}
+	if !strings.Contains(html, "?toggle=") || !strings.Contains(html, "?forget=") {
+		t.Fatal("missing session controls")
+	}
+
+	items := listSessions()
+	if len(items) != 2 {
+		t.Fatalf("sessions=%d", len(items))
+	}
+	setSessionEnabled(items[0].ID, false)
+	setSessionEnabled(items[1].ID, false)
+	paused := renderStatusHTML()
+	if !strings.Contains(paused, "已全部暂停") {
+		t.Fatalf("paused page missing status: %s", paused)
 	}
 }
 

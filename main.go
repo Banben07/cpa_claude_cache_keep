@@ -59,6 +59,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 	"unsafe"
@@ -95,33 +96,18 @@ type registrationCapabilities struct {
 	ManagementAPI      bool `json:"management_api"`
 }
 
-type snapshot struct {
-	Model        string
-	SourceFormat string
-	ToFormat     string
-	Headers      http.Header
-	Body         []byte
-	SavedAt      time.Time
-}
-
 type statusPage struct {
-	HasSnapshot       bool
-	Model             string
-	ToFormat          string
-	BodyBytes         int
-	SavedAt           time.Time
-	LastPingAt        time.Time
-	LastPingError     string
-	IntervalMin       int
-	MaxTokens         int
-	HasMaxTokens      bool
-	Stream            bool
-	MessageCount      int
-	CacheControlCount int
-	CacheTTL          string
-	LoopStartedAt     time.Time
-	NextPingAt        time.Time
-	Now               time.Time
+	Sessions      []session
+	EnabledCount  int
+	IntervalMin   int
+	MaxTokens     int
+	MaxSessions   int
+	IdleEvictMin  int
+	LastPingAt    time.Time
+	LastPingError string
+	LoopStartedAt time.Time
+	NextPingAt    time.Time
+	Now           time.Time
 }
 
 type hostModelExecutionRequest struct {
@@ -132,10 +118,11 @@ type hostModelExecutionRequest struct {
 var (
 	mu            sync.Mutex
 	cfg           = defaultConfig()
-	last          snapshot
+	sessions      = map[string]*session{}
 	lastPingAt    time.Time
 	lastErr       string
 	loopStartedAt time.Time
+	pinging       bool
 	stopCh        chan struct{}
 )
 
@@ -213,15 +200,11 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 			"resources": []map[string]string{{
 				"Path":        "/status",
 				"Menu":        "缓存保活",
-				"Description": "最后一次 Claude 请求快照和保活状态。",
+				"Description": "按对话分别保活 Claude prompt cache，可勾选开关。",
 			}},
 		})
 	case pluginabi.MethodManagementHandle:
-		return okEnvelope(map[string]any{
-			"StatusCode": http.StatusOK,
-			"Headers":    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-			"Body":       []byte(renderStatusHTML()),
-		})
+		return handleStatusRequest(request)
 	default:
 		return errorEnvelope("unknown_method", "unknown method: "+method), nil
 	}
@@ -232,12 +215,14 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.2.0",
+			Version:          "0.3.0",
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "interval_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "How often to replay the last Claude request. Default 50."},
-				{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Output cap on keepalive pings. Default 1; 0 is better if the upstream allows it."},
+				{Name: "interval_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "How often to replay enabled sessions. Default 50."},
+				{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Output cap on keepalive pings. Default 1."},
+				{Name: "max_sessions", Type: pluginapi.ConfigFieldTypeInteger, Description: "Max remembered conversations. Default 8."},
+				{Name: "idle_evict_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Drop unchecked sessions after this idle time. Default 180. 0 keeps them until replaced."},
 			},
 		},
 		Capabilities: registrationCapabilities{
@@ -269,16 +254,61 @@ func saveSnapshot(raw []byte) {
 	if len(req.Body) == 0 {
 		return
 	}
-	mu.Lock()
-	last = snapshot{
-		Model:        req.Model,
-		SourceFormat: req.SourceFormat,
-		ToFormat:     req.ToFormat,
-		Headers:      cloneHeader(req.Headers),
-		Body:         append([]byte(nil), req.Body...),
-		SavedAt:      time.Now(),
+	upsertSession(req.Model, req.SourceFormat, req.ToFormat, req.Headers, req.Body)
+}
+
+func handleStatusRequest(raw []byte) ([]byte, error) {
+	var req pluginapi.ManagementRequest
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &req)
 	}
-	mu.Unlock()
+	redirect := false
+	if id := sanitizeSessionID(queryGet(req.Query, "toggle")); id != "" {
+		on := queryGet(req.Query, "on")
+		setSessionEnabled(id, on != "0")
+		redirect = true
+	}
+	if id := sanitizeSessionID(queryGet(req.Query, "forget")); id != "" {
+		forgetSession(id)
+		redirect = true
+	}
+	if redirect && strings.TrimSpace(req.Path) != "" {
+		return okEnvelope(map[string]any{
+			"StatusCode": http.StatusSeeOther,
+			"Headers":    http.Header{"Location": []string{req.Path}},
+			"Body":       []byte{},
+		})
+	}
+	return okEnvelope(map[string]any{
+		"StatusCode": http.StatusOK,
+		"Headers":    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+		"Body":       []byte(renderStatusHTML()),
+	})
+}
+
+func queryGet(query map[string][]string, key string) string {
+	if query == nil {
+		return ""
+	}
+	values := query[key]
+	if len(values) == 0 {
+		return ""
+	}
+	return values[0]
+}
+
+func sanitizeSessionID(id string) string {
+	id = strings.TrimSpace(strings.ToLower(id))
+	if len(id) != 16 {
+		return ""
+	}
+	for _, c := range id {
+		hex := (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+		if !hex {
+			return ""
+		}
+	}
+	return id
 }
 
 func startLoop() {
@@ -315,7 +345,7 @@ func pingLoop(interval time.Duration, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			sent, err := pingOnce()
+			sent, n, err := pingOnce()
 			if !sent {
 				continue
 			}
@@ -328,25 +358,54 @@ func pingLoop(interval time.Duration, stop <-chan struct{}) {
 			}
 			mu.Unlock()
 			if err != nil {
-				_ = hostLog("claude-cache-keepalive ping failed: " + err.Error())
+				_ = hostLog(fmt.Sprintf("claude-cache-keepalive ping failed (%d sessions): %s", n, err.Error()))
 			} else {
-				_ = hostLog("claude-cache-keepalive ping ok")
+				_ = hostLog(fmt.Sprintf("claude-cache-keepalive ping ok (%d sessions)", n))
 			}
 		}
 	}
 }
 
-func pingOnce() (bool, error) {
+func pingOnce() (bool, int, error) {
 	mu.Lock()
-	snap := last
+	if pinging {
+		mu.Unlock()
+		return false, 0, nil
+	}
+	pinging = true
 	maxTokens := cfg.MaxTokens
 	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		pinging = false
+		mu.Unlock()
+	}()
+
+	targets := enabledSnapshots()
+	if len(targets) == 0 {
+		return false, 0, nil
+	}
+	var errs []string
+	for _, snap := range targets {
+		err := pingSession(snap, maxTokens)
+		recordSessionPing(snap.ID, time.Now(), err)
+		if err != nil {
+			errs = append(errs, snap.Label+": "+err.Error())
+		}
+	}
+	if len(errs) > 0 {
+		return true, len(targets), fmt.Errorf("%s", strings.Join(errs, "; "))
+	}
+	return true, len(targets), nil
+}
+
+func pingSession(snap session, maxTokens int) error {
 	if len(snap.Body) == 0 {
-		return false, nil
+		return fmt.Errorf("empty snapshot")
 	}
 	body, err := limitOutput(snap.Body, maxTokens)
 	if err != nil {
-		return true, err
+		return err
 	}
 	entry := snap.SourceFormat
 	exit := snap.ToFormat
@@ -366,37 +425,31 @@ func pingOnce() (bool, error) {
 			Headers:       cloneHeader(snap.Headers),
 		},
 	})
-	return true, err
+	return err
 }
 
 func currentStatus() statusPage {
 	mu.Lock()
-	defer mu.Unlock()
 	now := time.Now()
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	page := statusPage{
 		IntervalMin:   cfg.IntervalMinutes,
 		MaxTokens:     cfg.MaxTokens,
+		MaxSessions:   cfg.MaxSessions,
+		IdleEvictMin:  cfg.IdleEvictMinutes,
 		LastPingAt:    lastPingAt,
 		LastPingError: lastErr,
 		LoopStartedAt: loopStartedAt,
 		NextPingAt:    nextPingAt(now, loopStartedAt, interval),
 		Now:           now,
 	}
-	if len(last.Body) == 0 {
-		return page
+	mu.Unlock()
+	page.Sessions = listSessions()
+	for _, item := range page.Sessions {
+		if item.Enabled {
+			page.EnabledCount++
+		}
 	}
-	info := inspectBody(last.Body)
-	page.HasSnapshot = true
-	page.Model = last.Model
-	page.ToFormat = last.ToFormat
-	page.BodyBytes = len(last.Body)
-	page.SavedAt = last.SavedAt
-	page.HasMaxTokens = info.HasMaxTokens
-	page.Stream = info.Stream
-	page.MessageCount = info.MessageCount
-	page.CacheControlCount = info.CacheControlCount
-	page.CacheTTL = info.CacheTTL
 	return page
 }
 

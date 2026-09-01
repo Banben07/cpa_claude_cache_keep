@@ -1,14 +1,19 @@
 # Claude cache keepalive plugin for CLIProxyAPI
 
-CPA 插件：把最后一次 **Claude** 上游请求存下来，每隔 50 分钟原样重发，并把 `max_tokens` 卡成 1（可改成 0）。用来刷新 Anthropic prompt cache 的 1 小时 TTL。
+CPA 插件：按对话记住 Claude 上游请求，每隔 50 分钟把**已勾选**的会话原样重发，并把 `max_tokens` 卡成 1。用来刷新 Anthropic prompt cache 的 1 小时 TTL。
 
-只处理 Claude 上游。Codex / GPT / Gemini / Grok 会跳过。
+只处理 Claude 上游。Codex / GPT / Gemini / Grok 会跳过。没有 `max_tokens` 的请求（常见是 `/v1/messages/count_tokens`）也不会进保活名单。
 
 ## 做什么
 
-1. `request.intercept_after` 记下 CPA 已经改完的那一包
-2. 定时重放，`stream=false`，`max_tokens` 限制输出
-3. 管理页看快照时间和上次 ping
+1. `request.intercept_after` 按「模型 + 第一条用户消息 + system 前缀」识别对话
+2. 最多记住 8 路会话；新对话默认勾选保活
+3. 定时重放已勾选会话，`stream=false`，`max_tokens` 限制输出
+4. 状态页可单独勾选 / 取消 / 忘记某一路
+
+取消勾选后仍会跟着新消息更新快照，重新打开会用最新前缀。已勾选的不会因为空闲被踢掉（保活本来就是在你不说话时打请求）。未勾选的超过 `idle_evict_minutes`（默认 180）会被丢掉；超过上限时优先丢掉未勾选、最久没说话的对话。
+
+重启 CPA 会清空内存里的会话名单。
 
 ## 编译
 
@@ -41,6 +46,8 @@ plugins:
       enabled: true
       interval_minutes: 50
       max_tokens: 1
+      max_sessions: 8
+      idle_evict_minutes: 180
 ```
 
 `plugins.enabled` 必须是 `true`。改完重启 CPA，或走管理 API 热加载。
@@ -64,13 +71,15 @@ plugins:
 
 网关地址用 `127.0.0.1`，不要用局域网 IP。Cursor 的 Gateway 表单对非 loopback 的 `http://` 会直接报 `must use https (or http on loopback)`。
 
-CPA 默契端口是 `8317`。Claude Code 正常聊一轮后，插件才会有快照；空闲约 50 分钟后打第一次保活。
+CPA 默契端口是 `8317`。Claude Code 正常聊一轮后，插件才会出现会话；空闲约 50 分钟后打第一次保活。
 
-状态页在 CPA 管理界面的 **Cache Keepalive**，或：
+状态页在 CPA 管理界面的 **缓存保活**，或：
 
 ```text
 /v0/resource/plugins/claude-cache-keepalive/status
 ```
+
+点左侧方块勾选或取消某一路。`忘记` 会从名单里删掉。
 
 ## 怎么确认有效
 
@@ -87,3 +96,5 @@ CPA 默契端口是 `8317`。Claude Code 正常聊一轮后，插件才会有快
 |------|------|------|
 | `interval_minutes` | 50 | 心跳间隔 |
 | `max_tokens` | 1 | 保活输出上限；上游若接受 `0` 更干净 |
+| `max_sessions` | 8 | 最多记住多少路对话（上限 32） |
+| `idle_evict_minutes` | 180 | 丢掉多久没新请求的未勾选对话；`0` 表示不按空闲淘汰 |

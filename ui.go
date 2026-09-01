@@ -9,29 +9,41 @@ import (
 )
 
 type statusView struct {
-	State         string
-	StateLabel    string
-	StateHint     string
-	IntervalMin   int
-	MaxTokens     int
-	HasSnapshot   bool
-	Model         string
-	ToFormat      string
-	BodySize      string
-	SavedAt       string
-	SavedAgo      string
-	LastPing      string
-	LastPingAgo   string
-	NextPing      string
-	NextPingAgo   string
-	MessageCount  string
-	CacheTTL      string
-	CacheBlocks   string
-	Stream        string
-	HasMaxTokens  bool
-	CountTokensWarn bool
-	PingError     string
-	Now           string
+	State        string
+	StateLabel   string
+	StateHint    string
+	IntervalMin  int
+	MaxTokens    int
+	MaxSessions  int
+	IdleEvictMin int
+	SessionCount int
+	EnabledCount int
+	HasSessions  bool
+	Sessions     []sessionRow
+	LastPing     string
+	LastPingAgo  string
+	NextPing     string
+	NextPingAgo  string
+	PingError    string
+	Now          string
+}
+
+type sessionRow struct {
+	ID          string
+	Label       string
+	Model       string
+	Enabled     bool
+	ToggleHref  string
+	ForgetHref  string
+	SavedAt     string
+	SavedAgo    string
+	LastPing    string
+	LastPingAgo string
+	PingError   string
+	CacheTTL    string
+	BodySize    string
+	Messages    string
+	RowClass    string
 }
 
 func renderStatusHTML() string {
@@ -48,46 +60,76 @@ func buildStatusView(st statusPage) statusView {
 	view := statusView{
 		IntervalMin:  st.IntervalMin,
 		MaxTokens:    st.MaxTokens,
-		HasSnapshot:  st.HasSnapshot,
-		Model:        dash(st.Model),
-		ToFormat:     dash(st.ToFormat),
-		BodySize:     formatBytes(st.BodyBytes),
-		SavedAt:      formatTime(st.SavedAt),
-		SavedAgo:     formatAgo(st.Now, st.SavedAt),
+		MaxSessions:  st.MaxSessions,
+		IdleEvictMin: st.IdleEvictMin,
+		SessionCount: len(st.Sessions),
+		EnabledCount: st.EnabledCount,
+		HasSessions:  len(st.Sessions) > 0,
 		LastPing:     formatTime(st.LastPingAt),
 		LastPingAgo:  formatAgo(st.Now, st.LastPingAt),
 		NextPing:     formatTime(st.NextPingAt),
 		NextPingAgo:  formatUntil(st.Now, st.NextPingAt),
-		MessageCount: dashInt(st.MessageCount),
-		CacheTTL:     dash(st.CacheTTL),
-		CacheBlocks:  dashInt(st.CacheControlCount),
-		Stream:       boolLabel(st.HasSnapshot, st.Stream),
-		HasMaxTokens: st.HasMaxTokens,
 		PingError:    st.LastPingError,
 		Now:          st.Now.UTC().Format("15:04:05 UTC"),
 	}
-	if st.HasSnapshot && !st.HasMaxTokens {
-		view.CountTokensWarn = true
+	view.Sessions = make([]sessionRow, 0, len(st.Sessions))
+	for _, item := range st.Sessions {
+		row := sessionRow{
+			ID:          item.ID,
+			Label:       item.Label,
+			Model:       dash(item.Model),
+			Enabled:     item.Enabled,
+			ToggleHref:  toggleHref(item.ID, !item.Enabled),
+			ForgetHref:  "?forget=" + item.ID,
+			SavedAt:     formatTime(item.LastSeen),
+			SavedAgo:    formatAgo(st.Now, item.LastSeen),
+			LastPing:    formatTime(item.LastPingAt),
+			LastPingAgo: formatAgo(st.Now, item.LastPingAt),
+			PingError:   item.LastPingError,
+			CacheTTL:    dash(item.Info.CacheTTL),
+			BodySize:    formatBytes(len(item.Body)),
+			Messages:    dashInt(item.Info.MessageCount),
+			RowClass:    "off",
+		}
+		switch {
+		case item.LastPingError != "":
+			row.RowClass = "error"
+		case item.Enabled:
+			row.RowClass = "on"
+		}
+		view.Sessions = append(view.Sessions, row)
 	}
 	switch {
-	case st.LastPingError != "":
+	case st.LastPingError != "" && st.EnabledCount > 0:
 		view.State = "error"
 		view.StateLabel = "保活失败"
-		view.StateHint = "上次重放出错。看下面的错误，修好前不要指望缓存 TTL 被刷新。"
-	case !st.HasSnapshot:
+		view.StateHint = "上一轮重放有会话出错。可先取消勾选出问题的对话，或看每条下面的错误。"
+	case len(st.Sessions) == 0:
 		view.State = "empty"
-		view.StateLabel = "等待快照"
-		view.StateHint = "还没有记下 Claude 请求。用 Claude Code 走 CPA 正常聊一轮后，这里会出现快照。"
+		view.StateLabel = "等待对话"
+		view.StateHint = "还没有记下 Claude 对话。用 Claude Code 走 CPA 正常聊一轮后，这里会出现会话；新对话默认勾选保活。"
+	case st.EnabledCount == 0:
+		view.State = "empty"
+		view.StateLabel = "已全部暂停"
+		view.StateHint = "会话还在，但没有勾选保活。点左侧方块即可重新打开；取消勾选的对话超过空闲时间会被丢掉。"
 	case st.LastPingAt.IsZero():
 		view.State = "armed"
 		view.StateLabel = "已记录，等待保活"
-		view.StateHint = fmt.Sprintf("每隔 %d 分钟重放最后一次请求，并把 max_tokens 卡成 %d。第一次保活按插件启动后的定时器计算。", st.IntervalMin, st.MaxTokens)
+		view.StateHint = fmt.Sprintf("当前 %d 路勾选保活。每隔 %d 分钟重放这些对话的最后一次请求，并把 max_tokens 卡成 %d。", st.EnabledCount, st.IntervalMin, st.MaxTokens)
 	default:
 		view.State = "ok"
 		view.StateLabel = "保活运行中"
-		view.StateHint = fmt.Sprintf("上次重放成功。之后每隔 %d 分钟再打一次，输出上限 max_tokens=%d。", st.IntervalMin, st.MaxTokens)
+		view.StateHint = fmt.Sprintf("上一轮重放成功。之后每隔 %d 分钟再打一次已勾选的 %d 路对话，输出上限 max_tokens=%d。", st.IntervalMin, st.EnabledCount, st.MaxTokens)
 	}
 	return view
+}
+
+func toggleHref(id string, enable bool) string {
+	on := "0"
+	if enable {
+		on = "1"
+	}
+	return "?toggle=" + id + "&on=" + on
 }
 
 func dash(v string) string {
@@ -102,16 +144,6 @@ func dashInt(v int) string {
 		return "—"
 	}
 	return fmt.Sprintf("%d", v)
-}
-
-func boolLabel(has bool, v bool) string {
-	if !has {
-		return "—"
-	}
-	if v {
-		return "是"
-	}
-	return "否"
 }
 
 func formatBytes(n int) string {
@@ -201,7 +233,6 @@ const statusHTML = `<!doctype html>
   --err: #ff6b6b;
   --err-bg: rgba(255,107,107,.12);
   --warn: #f5c14a;
-  --warn-bg: rgba(245,193,74,.12);
 }
 * { box-sizing: border-box; }
 body {
@@ -216,7 +247,7 @@ body {
 main { max-width: 980px; margin: 0 auto; padding: 28px 20px 48px; }
 .top { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; margin-bottom: 22px; }
 h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.02em; }
-.lead { margin: 0; color: var(--muted); max-width: 42rem; }
+.lead { margin: 0; color: var(--muted); max-width: 46rem; }
 .badge {
   display: inline-flex; align-items: center; gap: 8px;
   padding: 8px 12px; border-radius: 999px; font-weight: 600; font-size: 13px;
@@ -227,36 +258,72 @@ h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.02em; }
 .state-armed { color: var(--armed); background: var(--armed-bg); }
 .state-empty { color: var(--empty); background: var(--empty-bg); }
 .state-error { color: var(--err); background: var(--err-bg); }
-.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-@media (max-width: 760px) { .grid { grid-template-columns: 1fr; } main { padding: 20px 16px 36px; } }
-.card {
+.stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+@media (max-width: 760px) {
+  .stats { grid-template-columns: 1fr 1fr; }
+  main { padding: 20px 16px 36px; }
+}
+.stat {
   background: linear-gradient(180deg, var(--panel), var(--panel-2));
   border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 18px 18px 8px;
-  min-height: 220px;
+  border-radius: 14px;
+  padding: 12px 14px;
 }
-.card h2 { margin: 0 0 14px; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
-.row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-top: 1px solid var(--line); }
-.row:first-of-type { border-top: 0; }
-.k { color: var(--muted); }
-.v { font-variant-numeric: tabular-nums; text-align: right; word-break: break-all; }
-.v small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.stat .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.stat .v { margin-top: 4px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.stat .v small { display: block; color: var(--muted); font-weight: 400; font-size: 12px; margin-top: 2px; }
 .empty {
-  margin-top: 14px;
+  margin-top: 6px;
   padding: 18px;
   border: 1px dashed var(--line);
   border-radius: 16px;
   color: var(--muted);
   background: rgba(255,255,255,.02);
 }
-.warn, .error {
+.list { display: flex; flex-direction: column; gap: 10px; }
+.session {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 12px;
+  align-items: start;
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 14px 12px;
+}
+.session.on { box-shadow: inset 3px 0 0 var(--ok); }
+.session.off { opacity: .78; }
+.session.error { box-shadow: inset 3px 0 0 var(--err); }
+.cb {
+  width: 28px; height: 28px; margin-top: 2px;
+  border-radius: 8px; border: 1px solid var(--line);
+  background: #11141a; color: var(--muted);
+  display: grid; place-items: center;
+  text-decoration: none;
+}
+.cb.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); background: var(--ok-bg); }
+.cb .mark { font-size: 16px; line-height: 1; }
+h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; word-break: break-word; }
+.meta { color: var(--muted); font-size: 13px; }
+.meta span { white-space: nowrap; }
+.times { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px 16px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.forget {
+  color: var(--muted); font-size: 12px; text-decoration: none;
+  padding: 6px 8px; border-radius: 8px; border: 1px solid transparent;
+}
+.forget:hover { color: var(--err); border-color: var(--line); }
+.error {
   margin-top: 14px;
   padding: 12px 14px;
   border-radius: 12px;
+  color: var(--err); background: var(--err-bg); white-space: pre-wrap;
 }
-.warn { color: var(--warn); background: var(--warn-bg); }
-.error { color: var(--err); background: var(--err-bg); white-space: pre-wrap; }
+.row-err { margin-top: 8px; color: var(--err); font-size: 12px; }
+.hint {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
 .foot { margin-top: 18px; color: var(--muted); font-size: 12px; }
 code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; background: #11141a; padding: .12rem .35rem; border-radius: 6px; }
 </style>
@@ -270,34 +337,36 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </div>
     <div class="badge state-{{.State}}"><span class="dot"></span>{{.StateLabel}}</div>
   </div>
-  {{if not .HasSnapshot}}
-  <div class="empty">把 Claude Code 指到 CPA 的 <code>127.0.0.1:8317</code>，并设置 <code>promptCacheTtl: "1h"</code>。正常完成一轮对话后刷新本页。</div>
-  {{else}}
-  <div class="grid">
-    <section class="card">
-      <h2>最后一次请求</h2>
-      <div class="row"><span class="k">模型</span><span class="v">{{.Model}}</span></div>
-      <div class="row"><span class="k">上游格式</span><span class="v">{{.ToFormat}}</span></div>
-      <div class="row"><span class="k">请求体</span><span class="v">{{.BodySize}}</span></div>
-      <div class="row"><span class="k">消息数</span><span class="v">{{.MessageCount}}</span></div>
-      <div class="row"><span class="k">缓存 TTL</span><span class="v">{{.CacheTTL}}<small>{{if ne .CacheBlocks "—"}}{{.CacheBlocks}} 个 cache_control{{end}}</small></span></div>
-      <div class="row"><span class="k">记录时间</span><span class="v">{{.SavedAt}}<small>{{.SavedAgo}}</small></span></div>
-    </section>
-    <section class="card">
-      <h2>保活</h2>
-      <div class="row"><span class="k">间隔</span><span class="v">{{.IntervalMin}} 分钟</span></div>
-      <div class="row"><span class="k">输出上限</span><span class="v">max_tokens={{.MaxTokens}}</span></div>
-      <div class="row"><span class="k">上次保活</span><span class="v">{{.LastPing}}<small>{{.LastPingAgo}}</small></span></div>
-      <div class="row"><span class="k">下次保活</span><span class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></span></div>
-      <div class="row"><span class="k">原请求 stream</span><span class="v">{{.Stream}}</span></div>
-    </section>
+  <div class="stats">
+    <div class="stat"><div class="k">会话</div><div class="v">{{.SessionCount}} / {{.MaxSessions}}<small>{{.EnabledCount}} 路保活中</small></div></div>
+    <div class="stat"><div class="k">间隔</div><div class="v">{{.IntervalMin}} 分钟<small>输出上限 {{.MaxTokens}}</small></div></div>
+    <div class="stat"><div class="k">上次保活</div><div class="v">{{.LastPing}}<small>{{.LastPingAgo}}</small></div></div>
+    <div class="stat"><div class="k">下次保活</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
-  {{if .CountTokensWarn}}
-  <div class="warn">这份快照没有 <code>max_tokens</code>，很可能是 <code>/v1/messages/count_tokens</code> 而不是对话请求。保活重放它通常刷新不了对话的 prompt cache。</div>
-  {{end}}
+  {{if not .HasSessions}}
+  <div class="empty">把 Claude Code 指到 CPA 的 <code>127.0.0.1:8317</code>，并设置 <code>promptCacheTtl: "1h"</code>。正常完成一轮对话后刷新本页。插件会跳过 <code>count_tokens</code>。</div>
+  {{else}}
+  <div class="list">
+    {{range .Sessions}}
+    <article class="session {{.RowClass}}">
+      <a class="cb {{if .Enabled}}on{{end}}" href="{{.ToggleHref}}" title="{{if .Enabled}}取消保活{{else}}开启保活{{end}}"><span class="mark">{{if .Enabled}}✓{{else}}○{{end}}</span></a>
+      <div>
+        <h3>{{.Label}}</h3>
+        <div class="meta">{{.Model}} · TTL {{.CacheTTL}} · {{.Messages}} 条消息 · {{.BodySize}}</div>
+        <div class="times">
+          <span>最近对话 {{.SavedAt}} {{.SavedAgo}}</span>
+          <span>上次保活 {{.LastPing}} {{.LastPingAgo}}</span>
+        </div>
+        {{if .PingError}}<div class="row-err">{{.PingError}}</div>{{end}}
+      </div>
+      <a class="forget" href="{{.ForgetHref}}">忘记</a>
+    </article>
+    {{end}}
+  </div>
+  <p class="hint">点左侧方块勾选或取消保活。取消后仍会跟着新消息更新快照，重新勾选会用最新前缀。已勾选的不会因空闲被踢掉；未勾选的超过 {{.IdleEvictMin}} 分钟没新请求会被丢掉。满额时优先丢掉未勾选、最久没说话的对话。</p>
   {{end}}
   {{if .PingError}}
-  <div class="error">上次保活错误：{{.PingError}}</div>
+  <div class="error">上一轮保活错误：{{.PingError}}</div>
   {{end}}
   <p class="foot">页面每 15 秒自动刷新 · {{.Now}} · 不会显示 prompt 正文</p>
 </main>
