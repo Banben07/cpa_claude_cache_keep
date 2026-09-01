@@ -31,6 +31,8 @@ type statusView struct {
 	BudgetKeep   string
 	BudgetCap    string
 	BudgetRemain string
+	BudgetUsed   string
+	BudgetBlock  string
 	BudgetNote   string
 	ChatBlocked  bool
 	KeepPaused   bool
@@ -86,20 +88,22 @@ func buildStatusView(st statusPage) statusView {
 		BudgetKeep:   formatUnits(st.Budget.KeepaliveUnits),
 		BudgetCap:    formatUnits(st.Budget.KeepaliveCap),
 		BudgetRemain: formatUnits(st.Budget.KeepaliveRemain),
+		BudgetUsed:   formatPercent(st.Budget.UsedPercent, st.Budget.UsedKnown),
+		BudgetBlock:  fmt.Sprintf("%d%%", st.Budget.BlockAtPercent),
 		ChatBlocked:  st.Budget.ChatBlocked,
 		KeepPaused:   st.Budget.KeepalivePaused,
 	}
 	switch {
 	case st.Budget.ChatBlocked:
-		view.BudgetNote = "对话已停在预留线前，把额度留给保活。"
+		view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
 	case st.Budget.KeepalivePaused:
 		view.BudgetNote = st.Budget.PauseReason
-	case st.Budget.Budget > 0 && st.Budget.ObservedBudget:
-		view.BudgetNote = fmt.Sprintf("5 小时上限按上次撞线估算，预留 %d%% 给保活。", st.Budget.ReservePercent)
+	case st.Budget.UsedKnown:
+		view.BudgetNote = fmt.Sprintf("上游 5 小时已用 %.0f%%。CPA 对话会在 %d%% 停住，把最后 %d%% 留给保活。", st.Budget.UsedPercent, st.Budget.BlockAtPercent, st.Budget.ReservePercent)
 	case st.Budget.Budget > 0:
-		view.BudgetNote = fmt.Sprintf("已设置 5 小时预算，预留 %d%% 给保活。", st.Budget.ReservePercent)
+		view.BudgetNote = fmt.Sprintf("还没读到上游 5h 用量头，先按加权预算拦对话，预留 %d%% 给保活。", st.Budget.ReservePercent)
 	default:
-		view.BudgetNote = fmt.Sprintf("未填总额度时，保活最多用对话用量的 %d%%（空闲按会话估算保底）。", st.Budget.ReservePercent)
+		view.BudgetNote = fmt.Sprintf("等下一轮 CPA 请求带上 5h 用量头后，会在 %d%% 拦住对话，把最后 %d%% 留给保活。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
 	}
 	interval := time.Duration(st.IntervalMin) * time.Minute
 	view.Sessions = make([]sessionRow, 0, len(st.Sessions))
@@ -140,7 +144,7 @@ func buildStatusView(st statusPage) statusView {
 	case st.Budget.ChatBlocked:
 		view.State = "armed"
 		view.StateLabel = "对话已限流"
-		view.StateHint = "5 小时额度快用完，已拦住新的 Claude 对话请求，把余量留给缓存保活。窗口回落后会自动放开。"
+		view.StateHint = "5 小时额度快用完，已拦住 CPA 上的新对话请求，把最后一截留给缓存保活。窗口回落后会自动放开。"
 	case st.Budget.KeepalivePaused && st.EnabledCount > 0:
 		view.State = "armed"
 		view.StateLabel = "保活暂停"
@@ -189,6 +193,13 @@ func dashInt(v int) string {
 		return "—"
 	}
 	return fmt.Sprintf("%d", v)
+}
+
+func formatPercent(v float64, known bool) string {
+	if !known {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f%%", v)
 }
 
 func formatUnits(n int64) string {
@@ -411,12 +422,11 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">最近一次到期</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
   <div class="stats">
-    <div class="stat"><div class="k">5 小时对话</div><div class="v">{{.BudgetChat}}<small>{{.BudgetWindow}} 滚动窗口</small></div></div>
-    <div class="stat"><div class="k">5 小时保活</div><div class="v">{{.BudgetKeep}}<small>额度 {{.BudgetCap}} · 剩余 {{.BudgetRemain}}</small></div></div>
-    <div class="stat" style="grid-column: span 2;"><div class="k">预留策略</div><div class="v" style="font-weight:500;text-align:left">{{.BudgetNote}}</div></div>
+    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>CPA 对话停在 {{.BudgetBlock}}</small></div></div>
+    <div class="stat"><div class="k">CPA 对话 / 保活</div><div class="v">{{.BudgetChat}} / {{.BudgetKeep}}<small>{{.BudgetNote}}</small></div></div>
   </div>
   {{if .ChatBlocked}}
-  <div class="warn">新的 Claude 对话请求已被拦住，把 5 小时额度留给保活。窗口回落后会自动恢复。</div>
+  <div class="warn">CPA 上的新对话请求已被拦住，把 5 小时额度留给保活。窗口回落后会自动恢复。</div>
   {{end}}
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>
@@ -442,7 +452,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。下次保活从该路最后一次对话请求起算。5 小时额度会给保活留出 {{.BudgetCap}} 加权用量；保活打满预留后会先停，对话快把窗口用尽时也会提前拦住（需已知或撞线估算出总额度）。</p>
+  <p class="hint">点左侧方块勾选或取消保活。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。</p>
   {{end}}
   {{if .PingError}}
   <div class="error">上一轮保活错误：{{.PingError}}</div>

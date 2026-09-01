@@ -220,7 +220,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.4.0",
+			Version:          "0.4.1",
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
@@ -228,10 +228,10 @@ func pluginRegistration() registration {
 				{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Output cap on keepalive pings. Default 1."},
 				{Name: "max_sessions", Type: pluginapi.ConfigFieldTypeInteger, Description: "Max remembered conversations. Default 8."},
 				{Name: "idle_evict_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Drop unchecked sessions after this idle time. Default 180. 0 keeps them until replaced."},
-				{Name: "window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Usage window for the 5-hour limit. Default 300."},
-				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Percent of the 5-hour window reserved for keepalive. Default 10."},
-				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Weighted token budget for the 5-hour window. 0 infers after a session-limit 429."},
-				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "When a budget is known, stop new Claude chat before it eats the keepalive reserve. Default true."},
+				{Name: "window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Usage window matching Claude's 5-hour session limit. Default 300."},
+				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat at this remaining percent so keepalive can keep using the 5-hour window. Default 10."},
+				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Fallback weighted budget if upstream 5h headers are missing. 0 uses Anthropic utilization headers."},
+				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Block new Claude chat through CPA once the 5-hour window hits the reserve line. Default true."},
 			},
 		},
 		Capabilities: registrationCapabilities{
@@ -425,11 +425,9 @@ func pingOnce() (bool, int, error) {
 	}()
 
 	targets := dueSnapshots(time.Now(), interval)
-	budget := currentBudget(time.Now())
-	if budget.KeepalivePaused {
+	if currentBudget(time.Now()).KeepalivePaused {
 		return false, 0, nil
 	}
-	targets = pickDueWithinBudget(targets, budget.KeepaliveRemain)
 	if len(targets) == 0 {
 		return false, 0, nil
 	}

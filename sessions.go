@@ -217,6 +217,9 @@ func resetSessionsForTest() {
 	limitHitUntil = time.Time{}
 	keepaliveActive = 0
 	currentPingID = ""
+	fiveHourUtil = 0
+	fiveHourUtilOK = false
+	fiveHourStatus = ""
 	cfg = defaultConfig()
 	mu.Unlock()
 }

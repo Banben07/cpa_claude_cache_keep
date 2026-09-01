@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -36,18 +37,39 @@ func TestKeepaliveReserveBlocksChatWhenBudgetKnown(t *testing.T) {
 	usageEvents = []usageEvent{{At: time.Now(), Units: 91000, Keepalive: false}}
 	mu.Unlock()
 	snap := currentBudget(time.Now())
-	if snap.ChatCap != 90000 {
-		t.Fatalf("chat cap=%d", snap.ChatCap)
-	}
 	if !snap.ChatBlocked {
-		t.Fatal("expected chat to stop before eating keepalive reserve")
+		t.Fatal("expected CPA chat to stop before eating keepalive reserve")
 	}
-	if snap.KeepaliveCap != 10000 {
-		t.Fatalf("keepalive cap=%d", snap.KeepaliveCap)
+	if snap.KeepalivePaused {
+		t.Fatal("keepalive must keep running in the reserved slice")
 	}
 }
 
-func TestKeepaliveCappedAgainstChatWithoutBudget(t *testing.T) {
+func TestFiveHourHeaderBlocksChatNotKeepalive(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.91"},
+		},
+	})
+	snap := currentBudget(time.Now())
+	if !snap.UsedKnown || snap.UsedPercent < 90 {
+		t.Fatalf("util=%v known=%v", snap.UsedPercent, snap.UsedKnown)
+	}
+	if !snap.ChatBlocked {
+		t.Fatal("CPA chat should stop at 90% to leave 10% for keepalive")
+	}
+	if snap.KeepalivePaused {
+		t.Fatal("keepalive should still run in the last 10%")
+	}
+}
+
+func TestKeepaliveNotPausedJustBecauseItUsedASlice(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)
 	mu.Lock()
@@ -58,12 +80,8 @@ func TestKeepaliveCappedAgainstChatWithoutBudget(t *testing.T) {
 	}
 	mu.Unlock()
 	snap := currentBudget(time.Now())
-	// 10% of chat relative: 90000 * 10/90 = 10000, keepalive already 20000 -> paused
-	if snap.KeepaliveCap != 10000 {
-		t.Fatalf("cap=%d", snap.KeepaliveCap)
-	}
-	if !snap.KeepalivePaused {
-		t.Fatal("expected keepalive to pause after using its slice")
+	if snap.KeepalivePaused {
+		t.Fatal("do not pause keepalive to give the window back to CPA chat")
 	}
 }
 
@@ -169,7 +187,7 @@ func TestParseReservePercent(t *testing.T) {
 func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 	resetSessionsForTest()
 	html := renderStatusHTML()
-	if !strings.Contains(html, "5 小时保活") {
+	if !strings.Contains(html, "5 小时已用") {
 		t.Fatalf("missing budget panel: %s", html)
 	}
 }

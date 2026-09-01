@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,6 +38,9 @@ type budgetSnapshot struct {
 	PauseReason     string
 	LimitHitUntil   time.Time
 	GuardChat       bool
+	UsedPercent     float64
+	UsedKnown       bool
+	BlockAtPercent  int
 }
 
 var (
@@ -45,6 +49,9 @@ var (
 	limitHitUntil   time.Time
 	keepaliveActive int
 	currentPingID   string
+	fiveHourUtil    float64
+	fiveHourUtilOK  bool
+	fiveHourStatus  string
 )
 
 func isKeepaliveRequest(headers http.Header) bool {
@@ -95,6 +102,37 @@ func modelWeight(model string) int64 {
 	}
 }
 
+func parseFiveHourUtilization(headers http.Header) (util float64, status string, ok bool) {
+	if headers == nil {
+		return 0, "", false
+	}
+	status = strings.ToLower(strings.TrimSpace(headers.Get("Anthropic-Ratelimit-Unified-5h-Status")))
+	raw := strings.TrimSpace(headers.Get("Anthropic-Ratelimit-Unified-5h-Utilization"))
+	if raw == "" && status == "" {
+		return 0, "", false
+	}
+	if raw == "" {
+		if status == "rejected" {
+			return 1, status, true
+		}
+		return 0, status, true
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, status, status != ""
+	}
+	if v > 1.5 {
+		v = v / 100
+	}
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	return v, status, true
+}
+
 func estimatePingUnits(item session) int64 {
 	if item.LastPingUnits > 0 {
 		return item.LastPingUnits
@@ -128,8 +166,20 @@ func recordUsage(rec pluginapi.UsageRecord) {
 	if now.IsZero() {
 		now = time.Now()
 	}
+	util, status, headerOK := parseFiveHourUtilization(rec.ResponseHeaders)
 	mu.Lock()
 	defer mu.Unlock()
+	if headerOK {
+		fiveHourUtil = util
+		fiveHourStatus = status
+		fiveHourUtilOK = true
+		if status == "rejected" || util >= 0.995 {
+			until := now.Add(20 * time.Minute)
+			if limitHitUntil.Before(until) {
+				limitHitUntil = until
+			}
+		}
+	}
 	keep := keepaliveActive > 0
 	if units > 0 {
 		usageEvents = append(usageEvents, usageEvent{At: now, Units: units, Keepalive: keep})
@@ -250,10 +300,25 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 		KeepaliveUnits: keep,
 		GuardChat:      cfg.guardChat(),
 		LimitHitUntil:  limitHitUntil,
+		BlockAtPercent: 100 - reserve,
 	}
-	if !limitHitUntil.IsZero() && now.Before(limitHitUntil) {
+	blockAt := float64(snap.BlockAtPercent) / 100
+	if fiveHourUtilOK {
+		snap.UsedKnown = true
+		snap.UsedPercent = fiveHourUtil * 100
+		if snap.GuardChat && fiveHourUtil >= blockAt {
+			snap.ChatBlocked = true
+		}
+		if fiveHourStatus == "rejected" || fiveHourUtil >= 0.995 {
+			snap.KeepalivePaused = true
+			snap.PauseReason = "5 小时额度已经用尽，保活也先停，等窗口回落"
+		}
+	}
+	if !limitHitUntil.IsZero() && now.Before(limitHitUntil) && (fiveHourStatus == "rejected" || !fiveHourUtilOK) {
 		snap.KeepalivePaused = true
-		snap.PauseReason = "刚撞到用量上限，先停保活，避免把窗口堵死"
+		if snap.PauseReason == "" {
+			snap.PauseReason = "刚撞到用量上限，保活先停，等窗口回落"
+		}
 	}
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	if interval <= 0 {
@@ -272,24 +337,15 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 		if snap.ChatCap < 0 {
 			snap.ChatCap = 0
 		}
-		snap.ChatBlocked = snap.GuardChat && chat >= snap.ChatCap
+		if !snap.UsedKnown && snap.GuardChat && chat >= snap.ChatCap {
+			snap.ChatBlocked = true
+		}
 	} else {
-		fromChat := int64(0)
-		if reserve < 100 {
-			fromChat = chat * int64(reserve) / int64(100-reserve)
-		}
-		snap.KeepaliveCap = fromChat
-		if snap.KeepaliveCap < floor {
-			snap.KeepaliveCap = floor
-		}
+		snap.KeepaliveCap = floor
 	}
 	snap.KeepaliveRemain = snap.KeepaliveCap - keep
 	if snap.KeepaliveRemain < 0 {
 		snap.KeepaliveRemain = 0
-	}
-	if !snap.KeepalivePaused && snap.KeepaliveRemain == 0 && keep >= snap.KeepaliveCap && snap.KeepaliveCap > 0 {
-		snap.KeepalivePaused = true
-		snap.PauseReason = "保活已用完预留额度，先让对话把 5 小时窗口用在正事上"
 	}
 	return snap
 }
@@ -333,7 +389,7 @@ func pickDueWithinBudget(due []session, remain int64) []session {
 }
 
 func chatGuardResponse() pluginapi.RequestInterceptResponse {
-	msg := "已为缓存保活预留下 5 小时额度，当前对话用量已到上限。保活仍会继续；窗口回落后再发消息。"
+	msg := "已为缓存保活预留下 5 小时额度，CPA 对话先停。保活仍会继续刷新 prompt cache；窗口回落后再发消息。"
 	body, _ := json.Marshal(map[string]any{
 		"type": "error",
 		"error": map[string]string{
