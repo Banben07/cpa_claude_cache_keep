@@ -2,10 +2,20 @@ package main
 
 import (
 	"strings"
+	"time"
 
+	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
 	"gopkg.in/yaml.v3"
 )
+
+type bodyInfo struct {
+	HasMaxTokens        bool
+	Stream              bool
+	MessageCount        int
+	CacheControlCount   int
+	CacheTTL            string
+}
 
 type pluginConfig struct {
 	IntervalMinutes int `yaml:"interval_minutes"`
@@ -61,4 +71,32 @@ func limitOutput(body []byte, maxTokens int) ([]byte, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func inspectBody(body []byte) bodyInfo {
+	info := bodyInfo{
+		HasMaxTokens:      gjson.GetBytes(body, "max_tokens").Exists(),
+		Stream:            gjson.GetBytes(body, "stream").Bool(),
+		MessageCount:      int(gjson.GetBytes(body, "messages.#").Int()),
+		CacheControlCount: strings.Count(string(body), `"cache_control"`),
+	}
+	switch {
+	case strings.Contains(string(body), `"ttl":"1h"`) || strings.Contains(string(body), `"ttl": "1h"`):
+		info.CacheTTL = "1h"
+	case strings.Contains(string(body), `"ttl":"5m"`) || strings.Contains(string(body), `"ttl": "5m"`):
+		info.CacheTTL = "5m"
+	}
+	return info
+}
+
+func nextPingAt(now, started time.Time, interval time.Duration) time.Time {
+	if started.IsZero() || interval <= 0 {
+		return time.Time{}
+	}
+	if now.Before(started) {
+		return started.Add(interval)
+	}
+	elapsed := now.Sub(started)
+	n := elapsed/interval + 1
+	return started.Add(n * interval)
 }

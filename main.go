@@ -58,7 +58,6 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
-	"html"
 	"net/http"
 	"sync"
 	"time"
@@ -106,15 +105,23 @@ type snapshot struct {
 }
 
 type statusPage struct {
-	HasSnapshot   bool      `json:"has_snapshot"`
-	Model         string    `json:"model,omitempty"`
-	ToFormat      string    `json:"to_format,omitempty"`
-	BodyBytes     int       `json:"body_bytes,omitempty"`
-	SavedAt       time.Time `json:"saved_at,omitempty"`
-	LastPingAt    time.Time `json:"last_ping_at,omitempty"`
-	LastPingError string    `json:"last_ping_error,omitempty"`
-	IntervalMin   int       `json:"interval_minutes"`
-	MaxTokens     int       `json:"max_tokens"`
+	HasSnapshot       bool
+	Model             string
+	ToFormat          string
+	BodyBytes         int
+	SavedAt           time.Time
+	LastPingAt        time.Time
+	LastPingError     string
+	IntervalMin       int
+	MaxTokens         int
+	HasMaxTokens      bool
+	Stream            bool
+	MessageCount      int
+	CacheControlCount int
+	CacheTTL          string
+	LoopStartedAt     time.Time
+	NextPingAt        time.Time
+	Now               time.Time
 }
 
 type hostModelExecutionRequest struct {
@@ -123,12 +130,13 @@ type hostModelExecutionRequest struct {
 }
 
 var (
-	mu         sync.Mutex
-	cfg        = defaultConfig()
-	last       snapshot
-	lastPingAt time.Time
-	lastErr    string
-	stopCh     chan struct{}
+	mu            sync.Mutex
+	cfg           = defaultConfig()
+	last          snapshot
+	lastPingAt    time.Time
+	lastErr       string
+	loopStartedAt time.Time
+	stopCh        chan struct{}
 )
 
 func main() {}
@@ -204,8 +212,8 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		return okEnvelope(map[string]any{
 			"resources": []map[string]string{{
 				"Path":        "/status",
-				"Menu":        "Cache Keepalive",
-				"Description": "Last Claude request snapshot and keepalive ping status.",
+				"Menu":        "缓存保活",
+				"Description": "最后一次 Claude 请求快照和保活状态。",
 			}},
 		})
 	case pluginabi.MethodManagementHandle:
@@ -224,7 +232,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.1.1",
+			Version:          "0.2.0",
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
@@ -277,6 +285,7 @@ func startLoop() {
 	stopLoop()
 	mu.Lock()
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
+	loopStartedAt = time.Now()
 	mu.Unlock()
 	ch := make(chan struct{})
 	mu.Lock()
@@ -306,34 +315,38 @@ func pingLoop(interval time.Duration, stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-ticker.C:
-			if err := pingOnce(); err != nil {
-				mu.Lock()
+			sent, err := pingOnce()
+			if !sent {
+				continue
+			}
+			mu.Lock()
+			lastPingAt = time.Now()
+			if err != nil {
 				lastErr = err.Error()
-				lastPingAt = time.Now()
-				mu.Unlock()
+			} else {
+				lastErr = ""
+			}
+			mu.Unlock()
+			if err != nil {
 				_ = hostLog("claude-cache-keepalive ping failed: " + err.Error())
 			} else {
-				mu.Lock()
-				lastErr = ""
-				lastPingAt = time.Now()
-				mu.Unlock()
 				_ = hostLog("claude-cache-keepalive ping ok")
 			}
 		}
 	}
 }
 
-func pingOnce() error {
+func pingOnce() (bool, error) {
 	mu.Lock()
 	snap := last
 	maxTokens := cfg.MaxTokens
 	mu.Unlock()
 	if len(snap.Body) == 0 {
-		return nil
+		return false, nil
 	}
 	body, err := limitOutput(snap.Body, maxTokens)
 	if err != nil {
-		return err
+		return true, err
 	}
 	entry := snap.SourceFormat
 	exit := snap.ToFormat
@@ -353,54 +366,38 @@ func pingOnce() error {
 			Headers:       cloneHeader(snap.Headers),
 		},
 	})
-	return err
+	return true, err
 }
 
 func currentStatus() statusPage {
 	mu.Lock()
 	defer mu.Unlock()
+	now := time.Now()
+	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	page := statusPage{
 		IntervalMin:   cfg.IntervalMinutes,
 		MaxTokens:     cfg.MaxTokens,
 		LastPingAt:    lastPingAt,
 		LastPingError: lastErr,
+		LoopStartedAt: loopStartedAt,
+		NextPingAt:    nextPingAt(now, loopStartedAt, interval),
+		Now:           now,
 	}
 	if len(last.Body) == 0 {
 		return page
 	}
+	info := inspectBody(last.Body)
 	page.HasSnapshot = true
 	page.Model = last.Model
 	page.ToFormat = last.ToFormat
 	page.BodyBytes = len(last.Body)
 	page.SavedAt = last.SavedAt
+	page.HasMaxTokens = info.HasMaxTokens
+	page.Stream = info.Stream
+	page.MessageCount = info.MessageCount
+	page.CacheControlCount = info.CacheControlCount
+	page.CacheTTL = info.CacheTTL
 	return page
-}
-
-func renderStatusHTML() string {
-	st := currentStatus()
-	errBlock := ""
-	if st.LastPingError != "" {
-		errBlock = "<p class=\"error\">last ping error: " + html.EscapeString(st.LastPingError) + "</p>"
-	}
-	saved := "none"
-	if st.HasSnapshot {
-		saved = st.SavedAt.Format(time.RFC3339)
-	}
-	pinged := "never"
-	if !st.LastPingAt.IsZero() {
-		pinged = st.LastPingAt.Format(time.RFC3339)
-	}
-	return `<!doctype html><meta charset="utf-8"><title>Cache Keepalive</title>
-<style>body{font-family:sans-serif;margin:2rem;line-height:1.5}code{background:#f3f4f6;padding:.1rem .3rem;border-radius:4px}.error{color:#b42318}</style>
-<h1>Claude cache keepalive</h1>
-<p>Replays the last Claude upstream request every <code>` + fmt.Sprintf("%d", st.IntervalMin) + `</code> minutes with <code>max_tokens=` + fmt.Sprintf("%d", st.MaxTokens) + `</code>.</p>
-<ul>
-<li>snapshot: ` + html.EscapeString(saved) + `</li>
-<li>model: ` + html.EscapeString(st.Model) + `</li>
-<li>to_format: ` + html.EscapeString(st.ToFormat) + `</li>
-<li>body bytes: ` + fmt.Sprintf("%d", st.BodyBytes) + `</li>
-<li>last ping: ` + html.EscapeString(pinged) + `</li>
-</ul>` + errBlock
 }
 
 func hostLog(message string) error {
