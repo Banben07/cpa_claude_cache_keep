@@ -19,6 +19,9 @@ type session struct {
 	LastSeen      time.Time
 	LastPingAt    time.Time
 	LastPingError string
+	LastChatUnits int64
+	LastPingUnits int64
+	PingExpensive bool
 	Info          bodyInfo
 }
 
@@ -41,6 +44,7 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 		existing.SavedAt = now
 		existing.LastSeen = now
 		existing.Info = info
+		existing.PingExpensive = false
 		return
 	}
 	if sessions == nil {
@@ -92,6 +96,9 @@ func dueSnapshots(now time.Time, interval time.Duration) []session {
 	out := make([]session, 0, len(sessions))
 	for _, item := range sessions {
 		if item == nil || !item.Enabled || len(item.Body) == 0 {
+			continue
+		}
+		if item.PingExpensive {
 			continue
 		}
 		if !sessionDue(item.LastSeen, item.LastPingAt, now, interval) {
@@ -205,6 +212,11 @@ func resetSessionsForTest() {
 	lastErr = ""
 	loopStartedAt = time.Time{}
 	pinging = false
+	usageEvents = nil
+	observedBudget = 0
+	limitHitUntil = time.Time{}
+	keepaliveActive = 0
+	currentPingID = ""
 	cfg = defaultConfig()
 	mu.Unlock()
 }

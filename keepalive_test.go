@@ -174,8 +174,8 @@ func TestPluginRegistrationHasRequiredMetadata(t *testing.T) {
 	if strings.TrimSpace(reg.Metadata.GitHubRepository) == "" {
 		t.Fatal("github repository required by CPA validPlugin")
 	}
-	if !reg.Capabilities.RequestInterceptor || !reg.Capabilities.ManagementAPI {
-		t.Fatal("expected request interceptor and management api")
+	if !reg.Capabilities.RequestInterceptor || !reg.Capabilities.ManagementAPI || !reg.Capabilities.UsagePlugin {
+		t.Fatal("expected request interceptor, management api, and usage plugin")
 	}
 	raw, err := json.Marshal(reg)
 	if err != nil {

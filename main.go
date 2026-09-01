@@ -94,6 +94,7 @@ type registration struct {
 type registrationCapabilities struct {
 	RequestInterceptor bool `json:"request_interceptor"`
 	ManagementAPI      bool `json:"management_api"`
+	UsagePlugin        bool `json:"usage_plugin"`
 }
 
 type statusPage struct {
@@ -108,6 +109,7 @@ type statusPage struct {
 	LoopStartedAt time.Time
 	NextPingAt    time.Time
 	Now           time.Time
+	Budget        budgetSnapshot
 }
 
 type hostModelExecutionRequest struct {
@@ -191,10 +193,13 @@ func handleMethod(method string, request []byte) ([]byte, error) {
 		stopLoop()
 		return okEnvelope(map[string]any{})
 	case pluginabi.MethodRequestInterceptBefore:
-		return okEnvelope(pluginapi.RequestInterceptResponse{})
+		return handleInterceptBefore(request)
 	case pluginabi.MethodRequestInterceptAfter:
 		saveSnapshot(request)
 		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	case pluginabi.MethodUsageHandle:
+		handleUsage(request)
+		return okEnvelope(map[string]any{})
 	case pluginabi.MethodManagementRegister:
 		return okEnvelope(map[string]any{
 			"resources": []map[string]string{{
@@ -215,7 +220,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.3.1",
+			Version:          "0.4.0",
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
@@ -223,11 +228,16 @@ func pluginRegistration() registration {
 				{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Output cap on keepalive pings. Default 1."},
 				{Name: "max_sessions", Type: pluginapi.ConfigFieldTypeInteger, Description: "Max remembered conversations. Default 8."},
 				{Name: "idle_evict_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Drop unchecked sessions after this idle time. Default 180. 0 keeps them until replaced."},
+				{Name: "window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Usage window for the 5-hour limit. Default 300."},
+				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Percent of the 5-hour window reserved for keepalive. Default 10."},
+				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Weighted token budget for the 5-hour window. 0 infers after a session-limit 429."},
+				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "When a budget is known, stop new Claude chat before it eats the keepalive reserve. Default true."},
 			},
 		},
 		Capabilities: registrationCapabilities{
 			RequestInterceptor: true,
 			ManagementAPI:      true,
+			UsagePlugin:        true,
 		},
 	}
 }
@@ -248,6 +258,9 @@ func saveSnapshot(raw []byte) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return
 	}
+	if isKeepaliveRequest(req.Headers) {
+		return
+	}
 	if !isClaudeUpstream(req.ToFormat, req.Model) {
 		return
 	}
@@ -255,6 +268,34 @@ func saveSnapshot(raw []byte) {
 		return
 	}
 	upsertSession(req.Model, req.SourceFormat, req.ToFormat, req.Headers, req.Body)
+}
+
+func handleInterceptBefore(raw []byte) ([]byte, error) {
+	var req pluginapi.RequestInterceptRequest
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &req)
+	}
+	if isKeepaliveRequest(req.Headers) {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	if !isClaudeUpstream(req.ToFormat, req.Model) || !isKeepaliveCandidate(req.Body) {
+		return okEnvelope(pluginapi.RequestInterceptResponse{})
+	}
+	if currentBudget(time.Now()).ChatBlocked {
+		return okEnvelope(chatGuardResponse())
+	}
+	return okEnvelope(pluginapi.RequestInterceptResponse{})
+}
+
+func handleUsage(raw []byte) {
+	var rec pluginapi.UsageRecord
+	if len(raw) == 0 {
+		return
+	}
+	if err := json.Unmarshal(raw, &rec); err != nil {
+		return
+	}
+	recordUsage(rec)
 }
 
 func handleStatusRequest(raw []byte) ([]byte, error) {
@@ -384,6 +425,11 @@ func pingOnce() (bool, int, error) {
 	}()
 
 	targets := dueSnapshots(time.Now(), interval)
+	budget := currentBudget(time.Now())
+	if budget.KeepalivePaused {
+		return false, 0, nil
+	}
+	targets = pickDueWithinBudget(targets, budget.KeepaliveRemain)
 	if len(targets) == 0 {
 		return false, 0, nil
 	}
@@ -417,6 +463,19 @@ func pingSession(snap session, maxTokens int) error {
 	if exit == "" {
 		exit = entry
 	}
+	mu.Lock()
+	keepaliveActive++
+	currentPingID = snap.ID
+	mu.Unlock()
+	defer func() {
+		mu.Lock()
+		keepaliveActive--
+		if keepaliveActive < 0 {
+			keepaliveActive = 0
+		}
+		currentPingID = ""
+		mu.Unlock()
+	}()
 	_, err = callHost(pluginabi.MethodHostModelExecute, hostModelExecutionRequest{
 		HostModelExecutionRequest: pluginapi.HostModelExecutionRequest{
 			EntryProtocol: entry,
@@ -424,7 +483,7 @@ func pingSession(snap session, maxTokens int) error {
 			Model:         snap.Model,
 			Stream:        false,
 			Body:          body,
-			Headers:       cloneHeader(snap.Headers),
+			Headers:       withKeepaliveHeader(snap.Headers),
 		},
 	})
 	return err
@@ -445,6 +504,7 @@ func currentStatus() statusPage {
 		Now:           now,
 	}
 	mu.Unlock()
+	page.Budget = currentBudget(now)
 	page.Sessions = listSessions()
 	for _, item := range page.Sessions {
 		if !item.Enabled {

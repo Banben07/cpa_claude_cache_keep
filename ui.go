@@ -26,6 +26,14 @@ type statusView struct {
 	NextPingAgo  string
 	PingError    string
 	Now          string
+	BudgetWindow string
+	BudgetChat   string
+	BudgetKeep   string
+	BudgetCap    string
+	BudgetRemain string
+	BudgetNote   string
+	ChatBlocked  bool
+	KeepPaused   bool
 }
 
 type sessionRow struct {
@@ -73,6 +81,25 @@ func buildStatusView(st statusPage) statusView {
 		NextPingAgo:  formatUntil(st.Now, st.NextPingAt),
 		PingError:    st.LastPingError,
 		Now:          st.Now.UTC().Format("15:04:05 UTC"),
+		BudgetWindow: fmt.Sprintf("%d 小时", (st.Budget.WindowMin+59)/60),
+		BudgetChat:   formatUnits(st.Budget.ChatUnits),
+		BudgetKeep:   formatUnits(st.Budget.KeepaliveUnits),
+		BudgetCap:    formatUnits(st.Budget.KeepaliveCap),
+		BudgetRemain: formatUnits(st.Budget.KeepaliveRemain),
+		ChatBlocked:  st.Budget.ChatBlocked,
+		KeepPaused:   st.Budget.KeepalivePaused,
+	}
+	switch {
+	case st.Budget.ChatBlocked:
+		view.BudgetNote = "对话已停在预留线前，把额度留给保活。"
+	case st.Budget.KeepalivePaused:
+		view.BudgetNote = st.Budget.PauseReason
+	case st.Budget.Budget > 0 && st.Budget.ObservedBudget:
+		view.BudgetNote = fmt.Sprintf("5 小时上限按上次撞线估算，预留 %d%% 给保活。", st.Budget.ReservePercent)
+	case st.Budget.Budget > 0:
+		view.BudgetNote = fmt.Sprintf("已设置 5 小时预算，预留 %d%% 给保活。", st.Budget.ReservePercent)
+	default:
+		view.BudgetNote = fmt.Sprintf("未填总额度时，保活最多用对话用量的 %d%%（空闲按会话估算保底）。", st.Budget.ReservePercent)
 	}
 	interval := time.Duration(st.IntervalMin) * time.Minute
 	view.Sessions = make([]sessionRow, 0, len(st.Sessions))
@@ -110,6 +137,14 @@ func buildStatusView(st statusPage) statusView {
 		view.Sessions = append(view.Sessions, row)
 	}
 	switch {
+	case st.Budget.ChatBlocked:
+		view.State = "armed"
+		view.StateLabel = "对话已限流"
+		view.StateHint = "5 小时额度快用完，已拦住新的 Claude 对话请求，把余量留给缓存保活。窗口回落后会自动放开。"
+	case st.Budget.KeepalivePaused && st.EnabledCount > 0:
+		view.State = "armed"
+		view.StateLabel = "保活暂停"
+		view.StateHint = st.Budget.PauseReason
 	case st.LastPingError != "" && st.EnabledCount > 0:
 		view.State = "error"
 		view.StateLabel = "保活失败"
@@ -154,6 +189,19 @@ func dashInt(v int) string {
 		return "—"
 	}
 	return fmt.Sprintf("%d", v)
+}
+
+func formatUnits(n int64) string {
+	if n <= 0 {
+		return "0"
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	if n < 1000000 {
+		return fmt.Sprintf("%.1fK", float64(n)/1000)
+	}
+	return fmt.Sprintf("%.2fM", float64(n)/1000000)
 }
 
 func formatBytes(n int) string {
@@ -331,6 +379,12 @@ h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em;
   border-radius: 12px;
   color: var(--err); background: var(--err-bg); white-space: pre-wrap;
 }
+.warn {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  color: var(--warn); background: rgba(245,193,74,.12);
+}
 .row-err { margin-top: 8px; color: var(--err); font-size: 12px; }
 .hint {
   margin-top: 16px;
@@ -356,6 +410,17 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">上次保活</div><div class="v">{{.LastPing}}<small>{{.LastPingAgo}}</small></div></div>
     <div class="stat"><div class="k">最近一次到期</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
+  <div class="stats">
+    <div class="stat"><div class="k">5 小时对话</div><div class="v">{{.BudgetChat}}<small>{{.BudgetWindow}} 滚动窗口</small></div></div>
+    <div class="stat"><div class="k">5 小时保活</div><div class="v">{{.BudgetKeep}}<small>额度 {{.BudgetCap}} · 剩余 {{.BudgetRemain}}</small></div></div>
+    <div class="stat" style="grid-column: span 2;"><div class="k">预留策略</div><div class="v" style="font-weight:500;text-align:left">{{.BudgetNote}}</div></div>
+  </div>
+  {{if .ChatBlocked}}
+  <div class="warn">新的 Claude 对话请求已被拦住，把 5 小时额度留给保活。窗口回落后会自动恢复。</div>
+  {{end}}
+  {{if and .KeepPaused (not .ChatBlocked)}}
+  <div class="warn">{{.BudgetNote}}</div>
+  {{end}}
   {{if not .HasSessions}}
   <div class="empty">把 Claude Code 指到 CPA 的 <code>127.0.0.1:8317</code>，并设置 <code>promptCacheTtl: "1h"</code>。正常完成一轮对话后刷新本页。插件会跳过 <code>count_tokens</code>。</div>
   {{else}}
@@ -377,7 +442,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。下次保活从该路最后一次对话请求起算，不跟全局保活时钟走。新消息会重置倒计时。取消后仍会跟着新消息更新快照。已勾选的不会因空闲被踢掉；未勾选的超过 {{.IdleEvictMin}} 分钟没新请求会被丢掉。</p>
+  <p class="hint">点左侧方块勾选或取消保活。下次保活从该路最后一次对话请求起算。5 小时额度会给保活留出 {{.BudgetCap}} 加权用量；保活打满预留后会先停，对话快把窗口用尽时也会提前拦住（需已知或撞线估算出总额度）。</p>
   {{end}}
   {{if .PingError}}
   <div class="error">上一轮保活错误：{{.PingError}}</div>

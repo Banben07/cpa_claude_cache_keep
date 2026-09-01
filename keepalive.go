@@ -22,14 +22,18 @@ type bodyInfo struct {
 }
 
 type pluginConfig struct {
-	IntervalMinutes  int `yaml:"interval_minutes"`
-	MaxTokens        int `yaml:"max_tokens"`
-	MaxSessions      int `yaml:"max_sessions"`
-	IdleEvictMinutes int `yaml:"idle_evict_minutes"`
+	IntervalMinutes  int   `yaml:"interval_minutes"`
+	MaxTokens        int   `yaml:"max_tokens"`
+	MaxSessions      int   `yaml:"max_sessions"`
+	IdleEvictMinutes int   `yaml:"idle_evict_minutes"`
+	WindowMinutes    int   `yaml:"window_minutes"`
+	ReservePercent   int   `yaml:"reserve_percent"`
+	FiveHourBudget   int64 `yaml:"five_hour_budget"`
+	GuardChat        *bool `yaml:"guard_chat"`
 }
 
 func defaultConfig() pluginConfig {
-	return pluginConfig{IntervalMinutes: 50, MaxTokens: 1, MaxSessions: 8, IdleEvictMinutes: 180}
+	return pluginConfig{IntervalMinutes: 50, MaxTokens: 1, MaxSessions: 8, IdleEvictMinutes: 180, WindowMinutes: defaultWindowMin, ReservePercent: defaultReservePct}
 }
 
 func parseConfig(raw []byte) pluginConfig {
@@ -53,7 +57,26 @@ func parseConfig(raw []byte) pluginConfig {
 	if cfg.IdleEvictMinutes < 0 {
 		cfg.IdleEvictMinutes = 180
 	}
+	if cfg.WindowMinutes <= 0 {
+		cfg.WindowMinutes = defaultWindowMin
+	}
+	if cfg.WindowMinutes > 24*60 {
+		cfg.WindowMinutes = 24 * 60
+	}
+	if cfg.ReservePercent <= 0 {
+		cfg.ReservePercent = defaultReservePct
+	}
+	if cfg.ReservePercent > 40 {
+		cfg.ReservePercent = 40
+	}
+	if cfg.FiveHourBudget < 0 {
+		cfg.FiveHourBudget = 0
+	}
 	return cfg
+}
+
+func (c pluginConfig) guardChat() bool {
+	return c.GuardChat == nil || *c.GuardChat
 }
 
 func isClaudeUpstream(toFormat, model string) bool {

@@ -13,7 +13,16 @@ CPA 插件：按对话记住 Claude 上游请求，每隔 50 分钟把**已勾�
 
 取消勾选后仍会跟着新消息更新快照，重新打开会用最新前缀。已勾选的不会因为空闲被踢掉（保活本来就是在你不说话时打请求）。未勾选的超过 `idle_evict_minutes`（默认 180）会被丢掉；超过上限时优先丢掉未勾选、最久没说话的对话。
 
-重启 CPA 会清空内存里的会话名单。
+重启 CPA 会清空内存里的会话名单和 5 小时用量窗口。
+
+## 5 小时额度
+
+Claude Code 的 session limit 是滚动 5 小时、按加权用量计（缓存命中便宜，Opus 更贵）。插件会分开记对话和保活：
+
+- 保活最多吃掉预留的那一块（默认 10%），打满就先停，避免把窗口烧光
+- 空闲时按已勾选会话估算保底，保证还能续上 1h cache
+- 若你填了 `five_hour_budget`，或曾经撞过 session limit，插件会在对话侧提前拦住，把余量留给保活
+- 缓存重建很贵的保活（`cache_creation` 突然很大）会自动跳过，等你再聊一轮再续
 
 ## 编译
 
@@ -48,6 +57,10 @@ plugins:
       max_tokens: 1
       max_sessions: 8
       idle_evict_minutes: 180
+      window_minutes: 300
+      reserve_percent: 10
+      five_hour_budget: 0
+      guard_chat: true
 ```
 
 `plugins.enabled` 必须是 `true`。改完重启 CPA，或走管理 API 热加载。
@@ -98,3 +111,7 @@ CPA 默契端口是 `8317`。Claude Code 正常聊一轮后，插件才会出现
 | `max_tokens` | 1 | 保活输出上限；上游若接受 `0` 更干净 |
 | `max_sessions` | 8 | 最多记住多少路对话（上限 32） |
 | `idle_evict_minutes` | 180 | 丢掉多久没新请求的未勾选对话；`0` 表示不按空闲淘汰 |
+| `window_minutes` | 300 | 用量窗口，对应 Claude 约 5 小时滚动限额 |
+| `reserve_percent` | 10 | 给保活预留的窗口比例；保活不会超过这块额度 |
+| `five_hour_budget` | 0 | 5 小时加权用量上限。`0` 表示不拦对话，只限制保活；撞到 session limit 后会按当时用量估算 |
+| `guard_chat` | true | 已知总额度时，对话用到预留线就返回 429，把余量留给保活 |
