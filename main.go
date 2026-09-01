@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.4.4"
+	pluginVersion = "0.4.5"
 )
 
 type envelope struct {
@@ -113,8 +113,12 @@ type statusPage struct {
 	NextPingAt    time.Time
 	Now           time.Time
 	Budget        budgetSnapshot
-	QuotaLog      []quotaSample
-	Version       string
+	QuotaLog         []quotaSample
+	Version          string
+	SubagentSkipped  int
+	LastSubagentKind string
+	LastSubagentAt   time.Time
+	LastSubagentLabel string
 }
 
 type hostModelExecutionRequest struct {
@@ -131,6 +135,10 @@ var (
 	loopStartedAt time.Time
 	pinging       bool
 	stopCh        chan struct{}
+	subagentSkipped     int
+	lastSubagentAt      time.Time
+	lastSubagentKind    string
+	lastSubagentLabel   string
 )
 
 func main() {}
@@ -503,8 +511,12 @@ func currentStatus() statusPage {
 		IdleEvictMin:  cfg.IdleEvictMinutes,
 		LastPingAt:    lastPingAt,
 		LastPingError: lastErr,
-		LoopStartedAt: loopStartedAt,
-		Now:           now,
+		LoopStartedAt:     loopStartedAt,
+		Now:               now,
+		SubagentSkipped:   subagentSkipped,
+		LastSubagentKind:  lastSubagentKind,
+		LastSubagentAt:    lastSubagentAt,
+		LastSubagentLabel: lastSubagentLabel,
 	}
 	mu.Unlock()
 	page.Budget = currentBudget(now)

@@ -29,13 +29,22 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 	if !isKeepaliveCandidate(body) {
 		return
 	}
+	kind := subagentKind(headers, body)
 	id := sessionKey(model, body)
 	now := time.Now()
 	info := inspectBody(body)
+	label := sessionLabel(body)
 	mu.Lock()
 	defer mu.Unlock()
+	if kind != "" {
+		subagentSkipped++
+		lastSubagentAt = now
+		lastSubagentKind = kind
+		lastSubagentLabel = label
+		return
+	}
 	if existing, ok := sessions[id]; ok {
-		existing.Label = sessionLabel(body)
+		existing.Label = label
 		existing.Model = model
 		existing.SourceFormat = sourceFormat
 		existing.ToFormat = toFormat
@@ -53,7 +62,7 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 	evictSessionsLocked(now, cfg.MaxSessions-1)
 	sessions[id] = &session{
 		ID:           id,
-		Label:        sessionLabel(body),
+		Label:        label,
 		Enabled:      true,
 		Model:        model,
 		SourceFormat: sourceFormat,
@@ -224,6 +233,10 @@ func resetSessionsForTest() {
 	lastCalibOK = false
 	unitsPerUtil = 0
 	quotaSamples = nil
+	subagentSkipped = 0
+	lastSubagentAt = time.Time{}
+	lastSubagentKind = ""
+	lastSubagentLabel = ""
 	cfg = defaultConfig()
 	mu.Unlock()
 }

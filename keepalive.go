@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -130,6 +131,23 @@ func inspectBody(body []byte) bodyInfo {
 
 func isKeepaliveCandidate(body []byte) bool {
 	return inspectBody(body).HasMaxTokens
+}
+
+// subagentKind reports whether this Claude request is a Claude Code Task/Agent
+// child, not the parent conversation. Those get their own system prompt and
+// first user message, so they already hash to a separate keepalive slot; we
+// skip them instead of occupying max_sessions and pinging a job that dies in minutes.
+func subagentKind(headers http.Header, body []byte) string {
+	if headerGetCI(headers, "X-Claude-Code-Parent-Agent-Id") != "" {
+		return "subagent"
+	}
+	if strings.EqualFold(headerGetCI(headers, "X-App"), "cli-bg") {
+		return "background"
+	}
+	if gjson.GetBytes(body, "task_budget").Exists() {
+		return "subagent"
+	}
+	return ""
 }
 
 func sessionKey(model string, body []byte) string {

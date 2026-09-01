@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -202,6 +203,47 @@ func TestPingOnceSkipsFreshSession(t *testing.T) {
 	sent, n, err := pingOnce()
 	if sent || n != 0 || err != nil {
 		t.Fatalf("fresh session must wait until last request + interval: sent=%v n=%d err=%v", sent, n, err)
+	}
+}
+
+func TestSubagentKindFromParentAgentHeader(t *testing.T) {
+	h := http.Header{"X-Claude-Code-Parent-Agent-Id": []string{"parent-1"}}
+	if subagentKind(h, claudeBody("搜一下", "explore")) != "subagent" {
+		t.Fatal("parent agent id should mark a subagent")
+	}
+	if subagentKind(nil, claudeBody("主对话", "sys")) != "" {
+		t.Fatal("plain chat should not be a subagent")
+	}
+}
+
+func TestSubagentKindFromBackgroundAppHeader(t *testing.T) {
+	h := http.Header{"X-App": []string{"cli-bg"}}
+	if subagentKind(h, claudeBody("后台任务", "sys")) != "background" {
+		t.Fatal("x-app=cli-bg should mark a background agent")
+	}
+}
+
+func TestSubagentKindFromTaskBudget(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-5","max_tokens":8000,"messages":[{"role":"user","content":"搜代码"}],"system":"explore","task_budget":{"type":"tokens","total":100000,"remaining":80000}}`)
+	if subagentKind(nil, body) != "subagent" {
+		t.Fatal("task_budget should mark a subagent")
+	}
+}
+
+func TestUpsertSkipsSubagentSessions(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	h := http.Header{
+		"X-Claude-Code-Parent-Agent-Id": []string{"abc"},
+		"X-Claude-Code-Agent-Id":        []string{"child"},
+	}
+	upsertSession("claude-opus-5", "claude", "claude", h, claudeBody("Explore the repo", "You are an explore agent"))
+	if len(listSessions()) != 0 {
+		t.Fatal("subagent requests must not occupy keepalive slots")
+	}
+	html := renderStatusHTML()
+	if !strings.Contains(html, "已跳过") || !strings.Contains(html, "Explore the repo") {
+		t.Fatalf("status page should explain skipped subagent: %s", html)
 	}
 }
 

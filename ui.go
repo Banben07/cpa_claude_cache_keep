@@ -37,8 +37,9 @@ type statusView struct {
 	BudgetNote   string
 	ChatBlocked  bool
 	KeepPaused   bool
-	HasQuotaLog  bool
-	QuotaLog     []quotaRow
+	HasQuotaLog        bool
+	QuotaLog           []quotaRow
+	SubagentNote       string
 }
 
 type quotaRow struct {
@@ -113,6 +114,9 @@ func buildStatusView(st statusPage) statusView {
 		KeepPaused:   st.Budget.KeepalivePaused,
 		Version:      st.Version,
 		HasQuotaLog:  len(st.QuotaLog) > 0,
+	}
+	if st.SubagentSkipped > 0 {
+		view.SubagentNote = fmt.Sprintf("已跳过 %d 次子代理请求，不进保活名单。最近：%s %s（%s）", st.SubagentSkipped, dash(st.LastSubagentKind), st.LastSubagentLabel, formatAgo(st.Now, st.LastSubagentAt))
 	}
 	view.QuotaLog = make([]quotaRow, 0, len(st.QuotaLog))
 	for _, sample := range st.QuotaLog {
@@ -587,10 +591,16 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。</p>
+  <p class="hint">点左侧方块勾选或取消保活。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，把最后一截留给保活刷新 cache。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
+  {{if .SubagentNote}}
+  <p class="hint">{{.SubagentNote}}</p>
+  {{end}}
   {{end}}
   {{if .PingError}}
   <div class="error">上一轮保活错误：{{.PingError}}</div>
+  {{end}}
+  {{if and .SubagentNote (not .HasSessions)}}
+  <p class="hint">{{.SubagentNote}}</p>
   {{end}}
   <p class="foot">数据每 15 秒静默更新 · {{.Now}} · {{.Version}} · 不会显示 prompt 正文</p>
 </main>
