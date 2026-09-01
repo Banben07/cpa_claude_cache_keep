@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -213,6 +214,47 @@ func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 	}
 	if !strings.Contains(html, pluginVersion) {
 		t.Fatal("missing plugin version")
+	}
+}
+
+func TestQuotaLogKeepsFiveNewest(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	hdr := func(u string) http.Header {
+		return http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{u},
+		}
+	}
+	for i := 1; i <= 6; i++ {
+		recordUsage(pluginapi.UsageRecord{
+			Provider:        "claude",
+			Model:           "claude-sonnet-5",
+			Detail:          pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
+			ResponseHeaders: hdr(fmt.Sprintf("0.%d0", i)),
+		})
+	}
+	got := listQuotaSamples()
+	if len(got) != 5 {
+		t.Fatalf("len=%d", len(got))
+	}
+	if got[0].RawUtil5h != "0.60" {
+		t.Fatalf("newest=%s", got[0].RawUtil5h)
+	}
+	if got[4].RawUtil5h != "0.20" {
+		t.Fatalf("oldest kept=%s", got[4].RawUtil5h)
+	}
+}
+
+func TestQuotaSectionRendersBelowSessions(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("主对话", "sys"))
+	html := renderStatusHTML()
+	sess := strings.Index(html, `class="list"`)
+	quota := strings.Index(html, "额度记录")
+	if sess < 0 || quota < 0 || quota < sess {
+		t.Fatalf("quota should sit below sessions: sess=%d quota=%d", sess, quota)
 	}
 }
 

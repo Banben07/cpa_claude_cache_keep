@@ -15,7 +15,7 @@ const (
 	keepaliveHeaderVal = "1"
 	defaultWindowMin   = 300
 	defaultReservePct  = 2
-	maxQuotaSamples    = 30
+	maxQuotaSamples    = 5
 )
 
 type usageEvent struct {

@@ -543,33 +543,6 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>
   {{end}}
-  <section class="quota">
-    <h2>额度记录</h2>
-    <p class="sub">每次 Claude 响应回来后，插件从 HTTP 头解析的结果。用来确认有没有真正读到 <code>Anthropic-Ratelimit-Unified-5h-*</code>。最新在上，最多 30 条；CPA 重启后清空。</p>
-    {{if .HasQuotaLog}}
-    <div class="scroll">
-      <table class="quota-table">
-        <thead>
-          <tr><th>时间</th><th>来源</th><th>5 小时</th><th>状态</th><th>7 天</th><th>原始头</th></tr>
-        </thead>
-        <tbody>
-          {{range .QuotaLog}}
-          <tr class="{{.RowClass}}">
-            <td>{{.At}}<div class="raw">{{.Ago}} · {{.Kind}} · {{.Model}}</div></td>
-            <td>{{.Kind}}</td>
-            <td class="util">{{.Util5h}}</td>
-            <td>{{.Status5h}}</td>
-            <td>{{.Util7d}}{{if ne .Status7d "—"}}<div class="raw">{{.Status7d}}</div>{{end}}</td>
-            <td class="raw">{{.Raw}}</td>
-          </tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-    {{else}}
-    <p class="sub">还没有用量回调。用 Claude Code 走 CPA 正常聊一轮后，这里应出现 5h-utilization / 5h-status。如果只有「未读到」，说明这次响应没带用量头。</p>
-    {{end}}
-  </section>
   {{if not .HasSessions}}
   <div class="empty">把 Claude Code 指到 CPA 的 <code>127.0.0.1:8317</code>，并设置 <code>promptCacheTtl: "1h"</code>。正常完成一轮对话后刷新本页。插件会跳过 <code>count_tokens</code>。</div>
   {{else}}
@@ -602,6 +575,33 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
   {{if and .SubagentNote (not .HasSessions)}}
   <p class="hint">{{.SubagentNote}}</p>
   {{end}}
+  <section class="quota">
+    <h2>额度记录</h2>
+    <p class="sub">每次 Claude 响应回来后，插件从 HTTP 头解析的结果。用来确认有没有真正读到 <code>Anthropic-Ratelimit-Unified-5h-*</code>。最新在上，最多 5 条；CPA 重启后清空。</p>
+    {{if .HasQuotaLog}}
+    <div class="scroll">
+      <table class="quota-table">
+        <thead>
+          <tr><th>时间</th><th>来源</th><th>5 小时</th><th>状态</th><th>7 天</th><th>原始头</th></tr>
+        </thead>
+        <tbody>
+          {{range .QuotaLog}}
+          <tr class="{{.RowClass}}">
+            <td>{{.At}}<div class="raw">{{.Ago}} · {{.Kind}} · {{.Model}}</div></td>
+            <td>{{.Kind}}</td>
+            <td class="util">{{.Util5h}}</td>
+            <td>{{.Status5h}}</td>
+            <td>{{.Util7d}}{{if ne .Status7d "—"}}<div class="raw">{{.Status7d}}</div>{{end}}</td>
+            <td class="raw">{{.Raw}}</td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="sub">还没有用量回调。用 Claude Code 走 CPA 正常聊一轮后，这里应出现 5h-utilization / 5h-status。如果只有「未读到」，说明这次响应没带用量头。</p>
+    {{end}}
+  </section>
   <p class="foot">数据每 15 秒静默更新 · {{.Now}} · {{.Version}} · 不会显示 prompt 正文</p>
 </main>
 <script>
