@@ -14,7 +14,7 @@ const (
 	keepaliveHeaderKey = "X-Claude-Cache-Keepalive"
 	keepaliveHeaderVal = "1"
 	defaultWindowMin   = 300
-	defaultReservePct  = 2
+	defaultReservePct  = 1
 	maxQuotaSamples    = 5
 )
 
@@ -368,7 +368,7 @@ func estimateNextChatUnitsLocked(model string, body []byte) int64 {
 
 // shouldBlockChat is local: it never contacts Anthropic. CPA chat is stopped
 // when the last known 5h utilization already hit the reserve line, or when
-// this request is predicted to land past that line (so a fat prompt at 97%
+// this request is predicted to land past that line (so a fat prompt at 98%
 // does not punch through 100% and start a streak of upstream 429s).
 func shouldBlockChat(now time.Time, model string, body []byte) bool {
 	mu.Lock()

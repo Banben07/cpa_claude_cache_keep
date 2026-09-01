@@ -55,18 +55,18 @@ func TestFiveHourHeaderBlocksChatNotKeepalive(t *testing.T) {
 		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
 		ResponseHeaders: http.Header{
 			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
-			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.985"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.992"},
 		},
 	})
 	snap := currentBudget(time.Now())
-	if !snap.UsedKnown || snap.UsedPercent < 98 {
+	if !snap.UsedKnown || snap.UsedPercent < 99 {
 		t.Fatalf("util=%v known=%v", snap.UsedPercent, snap.UsedKnown)
 	}
 	if !snap.ChatBlocked {
-		t.Fatal("CPA chat should stop at 98% to leave 2% for keepalive")
+		t.Fatal("CPA chat should stop at 99% to leave 1% for keepalive")
 	}
 	if snap.KeepalivePaused {
-		t.Fatal("keepalive should still run in the last 2%")
+		t.Fatal("keepalive should still run in the last 1%")
 	}
 }
 
@@ -84,7 +84,28 @@ func TestDefaultReserveDoesNotTripAtNinetyPercent(t *testing.T) {
 	})
 	snap := currentBudget(time.Now())
 	if snap.ChatBlocked {
-		t.Fatal("91% should still allow CPA chat when only 2% is reserved")
+		t.Fatal("91% should still allow CPA chat when only 1% is reserved")
+	}
+}
+
+func TestDefaultReserveAllowsNinetyEightPercent(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.98"},
+		},
+	})
+	snap := currentBudget(time.Now())
+	if snap.ChatBlocked {
+		t.Fatal("98% should still allow CPA chat with the default 1% reserve")
+	}
+	if snap.BlockAtPercent != 99 {
+		t.Fatalf("block at %d", snap.BlockAtPercent)
 	}
 }
 

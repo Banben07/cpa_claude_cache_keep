@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.4.8"
+	pluginVersion = "0.4.9"
 )
 
 type envelope struct {
@@ -242,7 +242,7 @@ func pluginRegistration() registration {
 				{Name: "max_sessions", Type: pluginapi.ConfigFieldTypeInteger, Description: "Max remembered conversations. Default 8."},
 				{Name: "idle_evict_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Drop unchecked sessions after this idle time. Default 180. 0 keeps them until replaced."},
 				{Name: "window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Usage window matching Claude's 5-hour session limit. Default 300."},
-				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat when this percent of the 5-hour window remains. Default 2; keepalive is max_tokens=1 plus cache reads."},
+				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat when this percent of the 5-hour window remains. Default 1; keepalive is max_tokens=1 plus cache reads."},
 				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Fallback weighted budget if upstream 5h headers are missing. 0 uses Anthropic utilization headers."},
 				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Block new Claude chat through CPA once the 5-hour window hits the reserve line. Default true."},
 			},
