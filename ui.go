@@ -39,6 +39,8 @@ type sessionRow struct {
 	SavedAgo    string
 	LastPing    string
 	LastPingAgo string
+	NextPing    string
+	NextPingAgo string
 	PingError   string
 	CacheTTL    string
 	BodySize    string
@@ -72,8 +74,10 @@ func buildStatusView(st statusPage) statusView {
 		PingError:    st.LastPingError,
 		Now:          st.Now.UTC().Format("15:04:05 UTC"),
 	}
+	interval := time.Duration(st.IntervalMin) * time.Minute
 	view.Sessions = make([]sessionRow, 0, len(st.Sessions))
 	for _, item := range st.Sessions {
+		next := sessionNextPingAt(item.LastSeen, item.LastPingAt, st.Now, interval)
 		row := sessionRow{
 			ID:          item.ID,
 			Label:       item.Label,
@@ -90,6 +94,12 @@ func buildStatusView(st statusPage) statusView {
 			BodySize:    formatBytes(len(item.Body)),
 			Messages:    dashInt(item.Info.MessageCount),
 			RowClass:    "off",
+		}
+		if item.Enabled {
+			row.NextPing = formatTime(next)
+			row.NextPingAgo = formatUntil(st.Now, next)
+		} else {
+			row.NextPing = "—"
 		}
 		switch {
 		case item.LastPingError != "":
@@ -115,11 +125,11 @@ func buildStatusView(st statusPage) statusView {
 	case st.LastPingAt.IsZero():
 		view.State = "armed"
 		view.StateLabel = "已记录，等待保活"
-		view.StateHint = fmt.Sprintf("当前 %d 路勾选保活。每隔 %d 分钟重放这些对话的最后一次请求，并把 max_tokens 卡成 %d。", st.EnabledCount, st.IntervalMin, st.MaxTokens)
+		view.StateHint = fmt.Sprintf("当前 %d 路勾选保活。每路从最后一次对话请求起算，每隔 %d 分钟重放一次，并把 max_tokens 卡成 %d。新消息会把该路倒计时重置。", st.EnabledCount, st.IntervalMin, st.MaxTokens)
 	default:
 		view.State = "ok"
 		view.StateLabel = "保活运行中"
-		view.StateHint = fmt.Sprintf("上一轮重放成功。之后每隔 %d 分钟再打一次已勾选的 %d 路对话，输出上限 max_tokens=%d。", st.IntervalMin, st.EnabledCount, st.MaxTokens)
+		view.StateHint = fmt.Sprintf("已勾选 %d 路。下次保活按各会话最后一次请求对齐，间隔 %d 分钟，输出上限 max_tokens=%d。", st.EnabledCount, st.IntervalMin, st.MaxTokens)
 	}
 	return view
 }
@@ -214,7 +224,6 @@ const statusHTML = `<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="15">
 <title>缓存保活</title>
 <style>
 :root {
@@ -235,8 +244,12 @@ const statusHTML = `<!doctype html>
   --warn: #f5c14a;
 }
 * { box-sizing: border-box; }
-body {
+html, body {
   margin: 0;
+  background: var(--bg);
+  color-scheme: dark;
+}
+body {
   color: var(--text);
   background:
     radial-gradient(1200px 500px at 10% -10%, rgba(122,162,255,.16), transparent 55%),
@@ -329,7 +342,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 </style>
 </head>
 <body>
-<main>
+<main id="view">
   <div class="top">
     <div>
       <h1>Claude 缓存保活</h1>
@@ -341,7 +354,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">会话</div><div class="v">{{.SessionCount}} / {{.MaxSessions}}<small>{{.EnabledCount}} 路保活中</small></div></div>
     <div class="stat"><div class="k">间隔</div><div class="v">{{.IntervalMin}} 分钟<small>输出上限 {{.MaxTokens}}</small></div></div>
     <div class="stat"><div class="k">上次保活</div><div class="v">{{.LastPing}}<small>{{.LastPingAgo}}</small></div></div>
-    <div class="stat"><div class="k">下次保活</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
+    <div class="stat"><div class="k">最近一次到期</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
   {{if not .HasSessions}}
   <div class="empty">把 Claude Code 指到 CPA 的 <code>127.0.0.1:8317</code>，并设置 <code>promptCacheTtl: "1h"</code>。正常完成一轮对话后刷新本页。插件会跳过 <code>count_tokens</code>。</div>
@@ -349,26 +362,75 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
   <div class="list">
     {{range .Sessions}}
     <article class="session {{.RowClass}}">
-      <a class="cb {{if .Enabled}}on{{end}}" href="{{.ToggleHref}}" title="{{if .Enabled}}取消保活{{else}}开启保活{{end}}"><span class="mark">{{if .Enabled}}✓{{else}}○{{end}}</span></a>
+      <a class="cb {{if .Enabled}}on{{end}}" data-action href="{{.ToggleHref}}" title="{{if .Enabled}}取消保活{{else}}开启保活{{end}}"><span class="mark">{{if .Enabled}}✓{{else}}○{{end}}</span></a>
       <div>
         <h3>{{.Label}}</h3>
         <div class="meta">{{.Model}} · TTL {{.CacheTTL}} · {{.Messages}} 条消息 · {{.BodySize}}</div>
         <div class="times">
-          <span>最近对话 {{.SavedAt}} {{.SavedAgo}}</span>
+          <span>最近请求 {{.SavedAt}} {{.SavedAgo}}</span>
+          <span>下次保活 {{.NextPing}} {{.NextPingAgo}}</span>
           <span>上次保活 {{.LastPing}} {{.LastPingAgo}}</span>
         </div>
         {{if .PingError}}<div class="row-err">{{.PingError}}</div>{{end}}
       </div>
-      <a class="forget" href="{{.ForgetHref}}">忘记</a>
+      <a class="forget" data-action href="{{.ForgetHref}}">忘记</a>
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。取消后仍会跟着新消息更新快照，重新勾选会用最新前缀。已勾选的不会因空闲被踢掉；未勾选的超过 {{.IdleEvictMin}} 分钟没新请求会被丢掉。满额时优先丢掉未勾选、最久没说话的对话。</p>
+  <p class="hint">点左侧方块勾选或取消保活。下次保活从该路最后一次对话请求起算，不跟全局保活时钟走。新消息会重置倒计时。取消后仍会跟着新消息更新快照。已勾选的不会因空闲被踢掉；未勾选的超过 {{.IdleEvictMin}} 分钟没新请求会被丢掉。</p>
   {{end}}
   {{if .PingError}}
   <div class="error">上一轮保活错误：{{.PingError}}</div>
   {{end}}
-  <p class="foot">页面每 15 秒自动刷新 · {{.Now}} · 不会显示 prompt 正文</p>
+  <p class="foot">数据每 15 秒静默更新 · {{.Now}} · 不会显示 prompt 正文</p>
 </main>
+<script>
+(function () {
+  var timer = null;
+  function apply(html, url) {
+    var doc = new DOMParser().parseFromString(html, "text/html");
+    var next = doc.getElementById("view");
+    var cur = document.getElementById("view");
+    if (!next || !cur) {
+      return;
+    }
+    cur.replaceWith(next);
+    if (url && url.indexOf("?") !== -1 && window.history && history.replaceState) {
+      history.replaceState(null, "", url.split("?")[0]);
+    }
+  }
+  function load(url) {
+    return fetch(url, { cache: "no-store", headers: { Accept: "text/html" }, redirect: "follow" }).then(function (res) {
+      if (!res.ok) {
+        throw new Error("HTTP " + res.status);
+      }
+      return res.text().then(function (html) {
+        apply(html, res.url || url);
+      });
+    });
+  }
+  document.addEventListener("click", function (ev) {
+    var a = ev.target.closest("a[data-action]");
+    if (!a) {
+      return;
+    }
+    ev.preventDefault();
+    load(a.href).catch(function () {
+      location.assign(a.href);
+    });
+  });
+  timer = setInterval(function () {
+    if (document.hidden) {
+      return;
+    }
+    load(location.pathname).catch(function () {});
+  }, 15000);
+  window.addEventListener("pagehide", function () {
+    if (timer) {
+      clearInterval(timer);
+    }
+  });
+})();
+</script>
 </body>
 </html>`

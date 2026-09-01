@@ -191,14 +191,32 @@ func truncateRunes(s string, n int) string {
 	return string(runes[:n]) + "…"
 }
 
-func nextPingAt(now, started time.Time, interval time.Duration) time.Time {
-	if started.IsZero() || interval <= 0 {
+// sessionNextPingAt aligns keepalive slots to the last real upstream request
+// (LastSeen), not to the last keepalive ping and not to plugin start.
+func sessionNextPingAt(lastSeen, lastPing, now time.Time, interval time.Duration) time.Time {
+	if lastSeen.IsZero() || interval <= 0 {
 		return time.Time{}
 	}
-	if now.Before(started) {
-		return started.Add(interval)
+	elapsed := now.Sub(lastSeen)
+	if elapsed < interval {
+		return lastSeen.Add(interval)
 	}
-	elapsed := now.Sub(started)
-	n := elapsed/interval + 1
-	return started.Add(n * interval)
+	n := elapsed / interval
+	slotStart := lastSeen.Add(n * interval)
+	if lastPing.Before(slotStart) {
+		return slotStart
+	}
+	return slotStart.Add(interval)
+}
+
+func sessionDue(lastSeen, lastPing, now time.Time, interval time.Duration) bool {
+	if lastSeen.IsZero() || interval <= 0 {
+		return false
+	}
+	if now.Sub(lastSeen) < interval {
+		return false
+	}
+	n := now.Sub(lastSeen) / interval
+	slotStart := lastSeen.Add(n * interval)
+	return lastPing.Before(slotStart)
 }

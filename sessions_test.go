@@ -194,3 +194,36 @@ func TestPingOnceSkipsWhenNothingEnabled(t *testing.T) {
 		t.Fatalf("unchecked sessions must not ping: sent=%v n=%d err=%v", sent, n, err)
 	}
 }
+
+func TestPingOnceSkipsFreshSession(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("刚聊完", "sys"))
+	sent, n, err := pingOnce()
+	if sent || n != 0 || err != nil {
+		t.Fatalf("fresh session must wait until last request + interval: sent=%v n=%d err=%v", sent, n, err)
+	}
+}
+
+func TestDueSnapshotsUsesLastRequestNotLastPing(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("到期检查", "sys"))
+	id := listSessions()[0].ID
+	now := time.Now()
+	mu.Lock()
+	sessions[id].LastSeen = now.Add(-70 * time.Minute)
+	sessions[id].LastPingAt = now.Add(-15 * time.Minute)
+	mu.Unlock()
+	due := dueSnapshots(now, 50*time.Minute)
+	if len(due) != 0 {
+		t.Fatal("current slot already pinged; last ping time must not pull the next slot earlier")
+	}
+	mu.Lock()
+	sessions[id].LastPingAt = time.Time{}
+	mu.Unlock()
+	due = dueSnapshots(now, 50*time.Minute)
+	if len(due) != 1 {
+		t.Fatalf("expected due after last request + interval, got %d", len(due))
+	}
+}

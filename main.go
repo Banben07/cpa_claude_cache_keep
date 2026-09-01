@@ -215,7 +215,7 @@ func pluginRegistration() registration {
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
-			Version:          "0.3.0",
+			Version:          "0.3.1",
 			Author:           "local",
 			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
@@ -281,8 +281,11 @@ func handleStatusRequest(raw []byte) ([]byte, error) {
 	}
 	return okEnvelope(map[string]any{
 		"StatusCode": http.StatusOK,
-		"Headers":    http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
-		"Body":       []byte(renderStatusHTML()),
+		"Headers": http.Header{
+			"Content-Type":  []string{"text/html; charset=utf-8"},
+			"Cache-Control": []string{"no-store"},
+		},
+		"Body": []byte(renderStatusHTML()),
 	})
 }
 
@@ -314,14 +317,13 @@ func sanitizeSessionID(id string) string {
 func startLoop() {
 	stopLoop()
 	mu.Lock()
-	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	loopStartedAt = time.Now()
 	mu.Unlock()
 	ch := make(chan struct{})
 	mu.Lock()
 	stopCh = ch
 	mu.Unlock()
-	go pingLoop(interval, ch)
+	go pingLoop(ch)
 }
 
 func stopLoop() {
@@ -334,11 +336,10 @@ func stopLoop() {
 	}
 }
 
-func pingLoop(interval time.Duration, stop <-chan struct{}) {
-	if interval <= 0 {
-		interval = 50 * time.Minute
-	}
-	ticker := time.NewTicker(interval)
+const checkEvery = 30 * time.Second
+
+func pingLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(checkEvery)
 	defer ticker.Stop()
 	for {
 		select {
@@ -374,6 +375,7 @@ func pingOnce() (bool, int, error) {
 	}
 	pinging = true
 	maxTokens := cfg.MaxTokens
+	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
 	mu.Unlock()
 	defer func() {
 		mu.Lock()
@@ -381,7 +383,7 @@ func pingOnce() (bool, int, error) {
 		mu.Unlock()
 	}()
 
-	targets := enabledSnapshots()
+	targets := dueSnapshots(time.Now(), interval)
 	if len(targets) == 0 {
 		return false, 0, nil
 	}
@@ -440,14 +442,21 @@ func currentStatus() statusPage {
 		LastPingAt:    lastPingAt,
 		LastPingError: lastErr,
 		LoopStartedAt: loopStartedAt,
-		NextPingAt:    nextPingAt(now, loopStartedAt, interval),
 		Now:           now,
 	}
 	mu.Unlock()
 	page.Sessions = listSessions()
 	for _, item := range page.Sessions {
-		if item.Enabled {
-			page.EnabledCount++
+		if !item.Enabled {
+			continue
+		}
+		page.EnabledCount++
+		next := sessionNextPingAt(item.LastSeen, item.LastPingAt, now, interval)
+		if next.IsZero() {
+			continue
+		}
+		if page.NextPingAt.IsZero() || next.Before(page.NextPingAt) {
+			page.NextPingAt = next
 		}
 	}
 	return page

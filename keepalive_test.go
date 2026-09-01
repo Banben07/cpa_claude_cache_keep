@@ -65,13 +65,48 @@ func TestInspectBodyCountTokensShape(t *testing.T) {
 	}
 }
 
-func TestNextPingAt(t *testing.T) {
-	start := time.Date(2026, 9, 1, 11, 0, 0, 0, time.UTC)
-	now := start.Add(10 * time.Minute)
-	got := nextPingAt(now, start, 50*time.Minute)
-	want := start.Add(50 * time.Minute)
+func TestSessionNextPingAtAnchoredToLastRequest(t *testing.T) {
+	lastSeen := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	interval := 50 * time.Minute
+
+	now := lastSeen.Add(10 * time.Minute)
+	got := sessionNextPingAt(lastSeen, time.Time{}, now, interval)
+	want := lastSeen.Add(interval)
 	if !got.Equal(want) {
-		t.Fatalf("got %s want %s", got, want)
+		t.Fatalf("before first slot: got %s want %s", got, want)
+	}
+
+	now = lastSeen.Add(50 * time.Minute)
+	got = sessionNextPingAt(lastSeen, time.Time{}, now, interval)
+	if !got.Equal(lastSeen.Add(interval)) {
+		t.Fatalf("due first slot should stay at lastSeen+interval, got %s", got)
+	}
+
+	pinged := lastSeen.Add(51 * time.Minute)
+	now = lastSeen.Add(52 * time.Minute)
+	got = sessionNextPingAt(lastSeen, pinged, now, interval)
+	if !got.Equal(lastSeen.Add(100 * time.Minute)) {
+		t.Fatalf("after ping, next slot should stay aligned to lastSeen, got %s", got)
+	}
+
+	now = lastSeen.Add(85 * time.Minute)
+	laterPing := lastSeen.Add(80 * time.Minute)
+	got = sessionNextPingAt(lastSeen, laterPing, now, interval)
+	if !got.Equal(lastSeen.Add(100 * time.Minute)) {
+		t.Fatalf("late ping must not shift the grid off lastSeen, got %s", got)
+	}
+}
+
+func TestSessionDue(t *testing.T) {
+	lastSeen := time.Now().Add(-51 * time.Minute)
+	if !sessionDue(lastSeen, time.Time{}, time.Now(), 50*time.Minute) {
+		t.Fatal("expected due after interval with no ping")
+	}
+	if sessionDue(time.Now(), time.Time{}, time.Now(), 50*time.Minute) {
+		t.Fatal("fresh request should not be due")
+	}
+	if sessionDue(lastSeen, lastSeen.Add(50*time.Minute), time.Now(), 50*time.Minute) {
+		t.Fatal("already pinged this slot should not be due")
 	}
 }
 
@@ -103,8 +138,14 @@ func TestRenderStatusHTMLEmptyAndArmed(t *testing.T) {
 	if !strings.Contains(html, "1h") {
 		t.Fatal("missing ttl")
 	}
-	if !strings.Contains(html, "?toggle=") || !strings.Contains(html, "?forget=") {
-		t.Fatal("missing session controls")
+	if !strings.Contains(html, "下次保活") {
+		t.Fatal("missing per-session next ping")
+	}
+	if strings.Contains(html, `http-equiv="refresh"`) {
+		t.Fatal("full page refresh causes flicker")
+	}
+	if !strings.Contains(html, `id="view"`) {
+		t.Fatal("missing view root for silent updates")
 	}
 
 	items := listSessions()

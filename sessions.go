@@ -86,12 +86,15 @@ func forgetSession(id string) bool {
 	return true
 }
 
-func enabledSnapshots() []session {
+func dueSnapshots(now time.Time, interval time.Duration) []session {
 	mu.Lock()
 	defer mu.Unlock()
 	out := make([]session, 0, len(sessions))
 	for _, item := range sessions {
 		if item == nil || !item.Enabled || len(item.Body) == 0 {
+			continue
+		}
+		if !sessionDue(item.LastSeen, item.LastPingAt, now, interval) {
 			continue
 		}
 		out = append(out, cloneSession(item))
@@ -125,11 +128,11 @@ func recordSessionPing(id string, pingedAt time.Time, pingErr error) {
 	if !ok {
 		return
 	}
-	item.LastPingAt = pingedAt
 	if pingErr != nil {
 		item.LastPingError = pingErr.Error()
 		return
 	}
+	item.LastPingAt = pingedAt
 	item.LastPingError = ""
 }
 
