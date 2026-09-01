@@ -12,7 +12,7 @@ CPA 插件：把最后一次 **Claude** 上游请求存下来，每隔 50 分钟
 
 ## 编译
 
-需要 Go（建议 1.22+）和 CGO（Linux 装 `gcc`，macOS 有 Xcode CLI tools）。
+需要 Go **1.26+**（CLIProxyAPI v7 SDK 要求）和 CGO（Linux 装 `gcc`，macOS 有 Xcode CLI tools）。
 
 ```bash
 make test
