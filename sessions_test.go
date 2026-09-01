@@ -362,17 +362,14 @@ func TestClaudeSessionIDKeepsCompactInSameRow(t *testing.T) {
 	}
 }
 
-func TestCompactWithoutSessionIDMergesLatest(t *testing.T) {
+func TestCompactWithoutSessionIDStaysSeparate(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)
 	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("原来的任务", "sys"))
 	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("This session is being continued from a previous conversation that ran out of context. Please continue the conversation from where it left off.", "new-sys"))
 	got := listSessions()
-	if len(got) != 1 {
-		t.Fatalf("compact without session id should merge into latest same-model session, got %d", len(got))
-	}
-	if got[0].Label != "原来的任务" {
-		t.Fatalf("label=%q", got[0].Label)
+	if len(got) != 2 {
+		t.Fatalf("without session id, compact must not guess and merge into another chat, got %d", len(got))
 	}
 }
 

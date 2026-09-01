@@ -4,11 +4,11 @@
 
 只处理 Claude 上游。Codex / GPT / Gemini / Grok 会跳过。没有 `max_tokens` 的请求（常见是 `/v1/messages/count_tokens`）也不会进保活名单。
 
-当前版本 **0.8.0**。
+当前版本 **0.8.1**。
 
 ## 做什么
 
-- 最多记住 8 路。有 `X-Claude-Code-Session-Id` 时按这个 ID 认对话，`/compact` 后仍是同一路；没有 ID 时才用「模型 + 第一条用户消息 + system 前缀」
+- 最多记住 8 路。有 `X-Claude-Code-Session-Id` 时按这个 ID 认对话，`/compact` 后仍是同一路。没有这个头时只用「模型 + 第一条用户消息 + system」，compact 可能显示成新的一行，不会猜着并进别的对话
 - 新对话默认勾选保活；从最后一次对话请求起算，每 50 分钟重放一次
 - Claude Code 的 Task / Agent 子代理不进保活名单（带 `X-Claude-Code-Agent-Id`，system 里有 `cc_is_subagent=true`）
 - 状态页可勾选、取消、改名、忘记某一路，也可改 5 小时额度的停线

@@ -47,7 +47,7 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 		lastSubagentLabel = label
 		return
 	}
-	id := resolveSessionIDLocked(model, sid, contentID, compact)
+	id := resolveSessionIDLocked(sid, contentID)
 	if existing, ok := sessions[id]; ok {
 		if !existing.CustomLabel && !(compact && strings.TrimSpace(existing.Label) != "") {
 			existing.Label = label
@@ -82,7 +82,7 @@ func upsertSession(model, sourceFormat, toFormat string, headers http.Header, bo
 	}
 }
 
-func resolveSessionIDLocked(model, sid, contentID string, compact bool) string {
+func resolveSessionIDLocked(sid, contentID string) string {
 	id := contentID
 	if sid != "" {
 		id = sidSessionKey(sid)
@@ -96,15 +96,6 @@ func resolveSessionIDLocked(model, sid, contentID string, compact bool) string {
 			return id
 		}
 	}
-	if compact {
-		if prev := latestSameModelLocked(model); prev != nil && prev.ID != id {
-			if sid != "" {
-				rekeySessionLocked(prev, id)
-				return id
-			}
-			return prev.ID
-		}
-	}
 	return id
 }
 
@@ -116,8 +107,6 @@ func rekeySessionLocked(item *session, newID string) {
 	if dest, ok := sessions[newID]; ok && dest != item {
 		if !dest.CustomLabel && item.CustomLabel {
 			dest.CustomLabel = true
-			dest.Label = item.Label
-		} else if !dest.CustomLabel && looksLikeCompact(dest.Label) && strings.TrimSpace(item.Label) != "" {
 			dest.Label = item.Label
 		}
 		if item.Enabled {
@@ -135,23 +124,6 @@ func rekeySessionLocked(item *session, newID string) {
 		sessions = map[string]*session{}
 	}
 	sessions[newID] = item
-}
-
-func latestSameModelLocked(model string) *session {
-	want := strings.ToLower(strings.TrimSpace(model))
-	var best *session
-	for _, item := range sessions {
-		if item == nil {
-			continue
-		}
-		if strings.ToLower(strings.TrimSpace(item.Model)) != want {
-			continue
-		}
-		if best == nil || item.LastSeen.After(best.LastSeen) {
-			best = item
-		}
-	}
-	return best
 }
 
 func setSessionEnabled(id string, enabled bool) bool {
