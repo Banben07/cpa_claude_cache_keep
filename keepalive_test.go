@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -32,5 +33,35 @@ func TestIsClaudeUpstream(t *testing.T) {
 	}
 	if isClaudeUpstream("codex", "gpt-5.6-sol") {
 		t.Fatal("codex should skip")
+	}
+}
+
+func TestPluginRegistrationHasRequiredMetadata(t *testing.T) {
+	reg := pluginRegistration()
+	if strings.TrimSpace(reg.Metadata.Name) == "" {
+		t.Fatal("name required")
+	}
+	if strings.TrimSpace(reg.Metadata.Version) == "" {
+		t.Fatal("version required")
+	}
+	if strings.TrimSpace(reg.Metadata.Author) == "" {
+		t.Fatal("author required")
+	}
+	if strings.TrimSpace(reg.Metadata.GitHubRepository) == "" {
+		t.Fatal("github repository required by CPA validPlugin")
+	}
+	if !reg.Capabilities.RequestInterceptor || !reg.Capabilities.ManagementAPI {
+		t.Fatal("expected request interceptor and management api")
+	}
+	raw, err := json.Marshal(reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded registration
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Metadata.GitHubRepository == "" || !decoded.Capabilities.RequestInterceptor {
+		t.Fatalf("round-trip lost required fields: %+v", decoded)
 	}
 }

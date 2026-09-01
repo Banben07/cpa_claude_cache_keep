@@ -223,10 +223,10 @@ func pluginRegistration() registration {
 	return registration{
 		SchemaVersion: pluginabi.SchemaVersion,
 		Metadata: pluginapi.Metadata{
-			Name:              pluginID,
-			Version:           "0.1.0",
-			Author:            "local",
-			GitHubRepository:  "",
+			Name:             pluginID,
+			Version:          "0.1.1",
+			Author:           "local",
+			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "interval_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "How often to replay the last Claude request. Default 50."},
 				{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Output cap on keepalive pings. Default 1; 0 is better if the upstream allows it."},
