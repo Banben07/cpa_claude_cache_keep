@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.6.0"
+	pluginVersion = "0.7.0"
 )
 
 type envelope struct {
@@ -242,7 +242,8 @@ func pluginRegistration() registration {
 				{Name: "max_sessions", Type: pluginapi.ConfigFieldTypeInteger, Description: "Max remembered conversations. Default 8."},
 				{Name: "idle_evict_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Drop unchecked sessions after this idle time. Default 180. 0 keeps them until replaced."},
 				{Name: "window_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Usage window matching Claude's 5-hour session limit. Default 300."},
-				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat when this percent of the 5-hour window remains. Default 5 (stop at 95%); 2% is too thin and a long turn can punch through to 100%."},
+				{Name: "stop_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "Stop CPA chat at this 5-hour utilization percent. Default 95. Status page can change it; 60-99."},
+				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "How much of the 5-hour window to leave after stop_percent. Default 5. Ignored if stop_percent is set."},
 				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Fallback weighted budget if upstream 5h headers are missing. 0 uses Anthropic utilization headers."},
 				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Block new Claude chat through CPA once the 5-hour window hits the reserve line. Default true."},
 			},
@@ -261,6 +262,9 @@ func applyConfig(request []byte) {
 		_ = json.Unmarshal(request, &req)
 	}
 	next := parseConfig(req.ConfigYAML)
+	if stop, ok := loadPersistedStopPercent(); ok {
+		next.ReservePercent = 100 - stop
+	}
 	mu.Lock()
 	cfg = next
 	mu.Unlock()
@@ -328,6 +332,10 @@ func handleStatusRequest(raw []byte) ([]byte, error) {
 	}
 	if id := sanitizeSessionID(queryGet(req.Query, "rename")); id != "" {
 		renameSession(id, queryGet(req.Query, "name"))
+		redirect = true
+	}
+	if stop, ok := parseStopQuery(queryGet(req.Query, "stop")); ok {
+		setStopPercent(stop)
 		redirect = true
 	}
 	if redirect && strings.TrimSpace(req.Path) != "" {

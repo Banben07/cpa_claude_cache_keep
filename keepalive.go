@@ -29,6 +29,7 @@ type pluginConfig struct {
 	IdleEvictMinutes int   `yaml:"idle_evict_minutes"`
 	WindowMinutes    int   `yaml:"window_minutes"`
 	ReservePercent   int   `yaml:"reserve_percent"`
+	StopPercent      int   `yaml:"stop_percent"`
 	FiveHourBudget   int64 `yaml:"five_hour_budget"`
 	GuardChat        *bool `yaml:"guard_chat"`
 }
@@ -63,6 +64,9 @@ func parseConfig(raw []byte) pluginConfig {
 	}
 	if cfg.WindowMinutes > 24*60 {
 		cfg.WindowMinutes = 24 * 60
+	}
+	if cfg.StopPercent > 0 {
+		cfg.ReservePercent = 100 - clampStopPercent(cfg.StopPercent)
 	}
 	if cfg.ReservePercent <= 0 {
 		cfg.ReservePercent = defaultReservePct

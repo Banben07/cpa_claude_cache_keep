@@ -36,6 +36,7 @@ type statusView struct {
 	BudgetBlock    string
 	BudgetNote     string
 	ReservePercent int
+	StopPercent    int
 	ChatBlocked    bool
 	KeepPaused     bool
 	HasQuotaLog    bool
@@ -112,6 +113,7 @@ func buildStatusView(st statusPage) statusView {
 		BudgetUsed:     formatPercent(st.Budget.UsedPercent, st.Budget.UsedKnown),
 		BudgetBlock:    fmt.Sprintf("%d%%", st.Budget.BlockAtPercent),
 		ReservePercent: st.Budget.ReservePercent,
+		StopPercent:    stopPercentFromReserve(st.Budget.ReservePercent),
 		ChatBlocked:    st.Budget.ChatBlocked,
 		KeepPaused:     st.Budget.KeepalivePaused,
 		Version:        st.Version,
@@ -468,6 +470,21 @@ h1 { margin: 0 0 6px; font-size: 24px; letter-spacing: -.02em; }
 .cb.on { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 55%, var(--line)); background: var(--ok-bg); }
 .cb .mark { font-size: 16px; line-height: 1; }
 h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; word-break: break-word; }
+.stop-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 16px; }
+.stop-form .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+.stop-form input {
+  width: 4.5rem; background: #11141a; color: var(--text);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 8px; font: inherit; font-weight: 650; font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.stop-form input:focus { outline: none; border-color: color-mix(in srgb, var(--armed) 55%, var(--line)); }
+.stop-form button {
+  color: var(--armed); background: var(--armed-bg);
+  border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; font: inherit; font-size: 12px; cursor: pointer;
+}
+.stop-form .hint { color: var(--muted); font-size: 12px; }
 .rename { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 0 0 4px; }
 .rename input {
   flex: 1; min-width: 10rem; max-width: 22rem;
@@ -552,6 +569,13 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>CPA 对话停在 {{.BudgetBlock}}</small></div></div>
     <div class="stat"><div class="k">CPA 对话 / 保活</div><div class="v">{{.BudgetChat}} / {{.BudgetKeep}}<small>{{.BudgetNote}}</small></div></div>
   </div>
+  <form class="stop-form" data-stop action="" method="get">
+    <span class="k">对话停在</span>
+    <input name="stop" type="number" min="60" max="99" step="1" value="{{.StopPercent}}" aria-label="对话停在百分之几">
+    <span>%</span>
+    <button type="submit">保存</button>
+    <span class="hint">默认 95。98 太薄，一发长对话容易打穿 100%。改完会记住，重启 CPA 也还在。</span>
+  </form>
   {{if .ChatBlocked}}
   <div class="warn">CPA 上的新对话请求已被拦住，避免一发打穿 5 小时额度。保活仍会继续；窗口回落后会自动恢复。</div>
   {{end}}
@@ -583,7 +607,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在 5 小时窗口用到 {{.BudgetBlock}} 时停住，留下一截给保活，也避免最后一发打穿 100%。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
+  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在上面填的百分比停住，留下一截给保活，也避免最后一发打穿 100%。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
   {{if .SubagentNote}}
   <p class="hint">{{.SubagentNote}}</p>
   {{end}}
@@ -659,7 +683,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     });
   });
   document.addEventListener("submit", function (ev) {
-    var form = ev.target.closest("form[data-rename]");
+    var form = ev.target.closest("form[data-rename], form[data-stop]");
     if (!form) {
       return;
     }
@@ -674,7 +698,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     if (document.hidden) {
       return;
     }
-    if (document.activeElement && document.activeElement.closest("form[data-rename]")) {
+    if (document.activeElement && document.activeElement.closest("form[data-rename], form[data-stop]")) {
       return;
     }
     load(location.pathname).catch(function () {});

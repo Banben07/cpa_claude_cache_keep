@@ -272,5 +272,7 @@ func resetSessionsForTest() {
 	lastSubagentKind = ""
 	lastSubagentLabel = ""
 	cfg = defaultConfig()
+	settingsPath = ""
+	persistSettings = false
 	mu.Unlock()
 }

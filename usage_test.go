@@ -274,6 +274,9 @@ func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 	if !strings.Contains(html, "CPA 对话停在 95%") {
 		t.Fatalf("default should stop chat at 95%%: %s", html)
 	}
+	if !strings.Contains(html, `data-stop`) || !strings.Contains(html, `name="stop"`) {
+		t.Fatal("status page should let you change the stop percent")
+	}
 	if strings.Contains(html, "对话用到 100% 才停") {
 		t.Fatal("98/100 is too thin; default must stop earlier")
 	}
