@@ -4,3 +4,6 @@ dist/
 *.dll
 *.h
 *.exe
+agent-tools/
+claude-cache-keepalive.settings.json
+.DS_Store

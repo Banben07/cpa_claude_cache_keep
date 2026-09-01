@@ -234,8 +234,8 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             pluginID,
 			Version:          pluginVersion,
-			Author:           "local",
-			GitHubRepository: "https://github.com/local/claude-cache-keepalive",
+			Author:           "Banben07",
+			GitHubRepository: "https://github.com/Banben07/cpa_claudec_keep",
 			ConfigFields: []pluginapi.ConfigField{
 				{Name: "interval_minutes", Type: pluginapi.ConfigFieldTypeInteger, Description: "How often to replay enabled sessions. Default 50."},
 				{Name: "max_tokens", Type: pluginapi.ConfigFieldTypeInteger, Description: "Output cap on keepalive pings. Default 1."},
