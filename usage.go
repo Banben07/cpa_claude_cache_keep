@@ -14,7 +14,7 @@ const (
 	keepaliveHeaderKey = "X-Claude-Cache-Keepalive"
 	keepaliveHeaderVal = "1"
 	defaultWindowMin   = 300
-	defaultReservePct  = 10
+	defaultReservePct  = 2
 )
 
 type usageEvent struct {

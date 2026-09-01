@@ -19,8 +19,8 @@ CPA 插件：按对话记住 Claude 上游请求，每隔 50 分钟把**已勾�
 
 Claude Code 的 session limit 是滚动 5 小时。插件会读上游响应头 `Anthropic-Ratelimit-Unified-5h-Utilization`：
 
-- **CPA 对话**用到 `100 - reserve_percent`（默认 90%）就拦截，返回 429
-- **保活**继续用最后 10%，刷新 prompt cache
+- **CPA 对话**用到 `100 - reserve_percent`（默认 **98%**）就拦截，返回 429
+- **保活**继续用最后 2%（`max_tokens=1` + cache read，用不了 10%）
 - 真的用到 100% / `rejected` 时，保活也停，避免空打
 
 `five_hour_budget` 只在没有用量头时当后备。不要把保活自己限死，那会把窗口全留给对话。
@@ -59,7 +59,7 @@ plugins:
       max_sessions: 8
       idle_evict_minutes: 180
       window_minutes: 300
-      reserve_percent: 10
+      reserve_percent: 2
       five_hour_budget: 0
       guard_chat: true
 ```
@@ -113,6 +113,6 @@ CPA 默契端口是 `8317`。Claude Code 正常聊一轮后，插件才会出现
 | `max_sessions` | 8 | 最多记住多少路对话（上限 32） |
 | `idle_evict_minutes` | 180 | 丢掉多久没新请求的未勾选对话；`0` 表示不按空闲淘汰 |
 | `window_minutes` | 300 | 用量窗口，对应 Claude 约 5 小时滚动限额 |
-| `reserve_percent` | 10 | CPA 对话在 5 小时窗口还剩这么多时停住，把余量留给保活 |
+| `reserve_percent` | 2 | CPA 对话在 5 小时窗口还剩这么多时停住。保活输出已卡成 1 token，2% 足够 |
 | `five_hour_budget` | 0 | 没有上游 5h 用量头时的加权后备；`0` 表示只信用量头 |
 | `guard_chat` | true | 到达预留线后拦截 CPA 上的新 Claude 对话 |

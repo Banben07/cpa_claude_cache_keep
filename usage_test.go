@@ -54,18 +54,36 @@ func TestFiveHourHeaderBlocksChatNotKeepalive(t *testing.T) {
 		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
 		ResponseHeaders: http.Header{
 			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.985"},
+		},
+	})
+	snap := currentBudget(time.Now())
+	if !snap.UsedKnown || snap.UsedPercent < 98 {
+		t.Fatalf("util=%v known=%v", snap.UsedPercent, snap.UsedKnown)
+	}
+	if !snap.ChatBlocked {
+		t.Fatal("CPA chat should stop at 98% to leave 2% for keepalive")
+	}
+	if snap.KeepalivePaused {
+		t.Fatal("keepalive should still run in the last 2%")
+	}
+}
+
+func TestDefaultReserveDoesNotTripAtNinetyPercent(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail:   pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
 			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.91"},
 		},
 	})
 	snap := currentBudget(time.Now())
-	if !snap.UsedKnown || snap.UsedPercent < 90 {
-		t.Fatalf("util=%v known=%v", snap.UsedPercent, snap.UsedKnown)
-	}
-	if !snap.ChatBlocked {
-		t.Fatal("CPA chat should stop at 90% to leave 10% for keepalive")
-	}
-	if snap.KeepalivePaused {
-		t.Fatal("keepalive should still run in the last 10%")
+	if snap.ChatBlocked {
+		t.Fatal("91% should still allow CPA chat when only 2% is reserved")
 	}
 }
 
