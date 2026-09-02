@@ -116,6 +116,7 @@ func limitOutput(body []byte, maxTokens int) ([]byte, error) {
 	return out, nil
 }
 
+
 func inspectBody(body []byte) bodyInfo {
 	info := bodyInfo{
 		HasMaxTokens:      gjson.GetBytes(body, "max_tokens").Exists(),

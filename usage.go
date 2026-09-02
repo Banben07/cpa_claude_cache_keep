@@ -56,6 +56,8 @@ type budgetSnapshot struct {
 	KeepaliveCap    int64
 	KeepaliveRemain int64
 	ChatBlocked     bool
+	ChatOverLimit   bool
+	ChatStopFired   bool
 	KeepalivePaused bool
 	PauseReason     string
 	LimitHitUntil   time.Time
@@ -78,6 +80,8 @@ var (
 	lastCalibOK     bool
 	unitsPerUtil    float64 // weighted units that move utilization by 1.0 (100%)
 	quotaSamples    []quotaSample
+	fiveHourReset   time.Time
+	chatStopFired   bool // already delivered the one-shot CPA chat stop for this over-limit stretch
 )
 
 func isKeepaliveRequest(headers http.Header) bool {
@@ -312,6 +316,13 @@ func recordUsage(rec pluginapi.UsageRecord) {
 		fiveHourUtilOK = true
 		lastCalibUtil = sample.Util5h
 		lastCalibOK = true
+		if !sample.Reset5h.IsZero() {
+			fiveHourReset = sample.Reset5h
+		}
+		blockAt := float64(stopPercentFromReserve(cfg.ReservePercent)) / 100
+		if sample.Util5h < blockAt {
+			chatStopFired = false
+		}
 		if sample.Status5h == "rejected" || sample.Util5h >= 0.995 {
 			until := now.Add(20 * time.Minute)
 			if limitHitUntil.Before(until) {
@@ -366,27 +377,54 @@ func estimateNextChatUnitsLocked(model string, headers http.Header, body []byte)
 	return estimateBodyUnits(model, body)
 }
 
-// shouldBlockChat is local: it never contacts Anthropic. CPA chat is stopped
-// when the last known 5h utilization already hit the reserve line, or when
-// this request is predicted to land past that line (so a fat prompt at 93%
-// does not punch through 100% and start a streak of upstream 429s).
-func shouldBlockChat(now time.Time, model string, headers http.Header, body []byte) bool {
-	mu.Lock()
-	defer mu.Unlock()
-	snap := currentBudgetLocked(now)
-	if snap.ChatBlocked {
-		return true
+func expireFiveHourLocked(now time.Time) {
+	if fiveHourReset.IsZero() || now.Before(fiveHourReset) {
+		return
 	}
-	if !snap.GuardChat || !fiveHourUtilOK || unitsPerUtil <= 0 {
+	fiveHourUtil = 0
+	fiveHourUtilOK = false
+	fiveHourStatus = ""
+	fiveHourReset = time.Time{}
+	unitsPerUtil = 0
+	lastCalibOK = false
+	lastCalibUtil = 0
+	chatStopFired = false
+}
+
+func chatPredictedOverLocked(model string, headers http.Header, body []byte, blockAt float64) bool {
+	if !fiveHourUtilOK || unitsPerUtil <= 0 {
 		return false
 	}
 	est := estimateNextChatUnitsLocked(model, headers, body)
 	if est <= 0 {
 		return false
 	}
-	blockAt := float64(snap.BlockAtPercent) / 100
-	predicted := fiveHourUtil + float64(est)/unitsPerUtil
-	return predicted >= blockAt
+	return fiveHourUtil+float64(est)/unitsPerUtil >= blockAt
+}
+
+// shouldBlockChat is local: it never contacts Anthropic. Crossing the stop
+// line (or a request predicted to land past it) intercepts once so a fat
+// turn cannot punch through 100%. The next chat is allowed through so a
+// refreshed 5h window can be observed; after that, quota headers decide
+// whether to arm another one-shot stop.
+func shouldBlockChat(now time.Time, model string, headers http.Header, body []byte) bool {
+	mu.Lock()
+	defer mu.Unlock()
+	snap := currentBudgetLocked(now)
+	if !snap.GuardChat {
+		chatStopFired = false
+		return false
+	}
+	over := snap.ChatOverLimit || chatPredictedOverLocked(model, headers, body, float64(snap.BlockAtPercent)/100)
+	if !over {
+		chatStopFired = false
+		return false
+	}
+	if chatStopFired {
+		return false
+	}
+	chatStopFired = true
+	return true
 }
 
 func noteUsageFailure(rec pluginapi.UsageRecord) {
@@ -454,6 +492,7 @@ func currentBudget(now time.Time) budgetSnapshot {
 }
 
 func currentBudgetLocked(now time.Time) budgetSnapshot {
+	expireFiveHourLocked(now)
 	trimUsageLocked(now)
 	chat, keep := sumUsageLocked()
 	reserve := cfg.ReservePercent
@@ -486,7 +525,7 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 		snap.UsedKnown = true
 		snap.UsedPercent = fiveHourUtil * 100
 		if snap.GuardChat && fiveHourUtil >= blockAt {
-			snap.ChatBlocked = true
+			snap.ChatOverLimit = true
 		}
 		if fiveHourStatus == "rejected" || fiveHourUtil >= 0.995 {
 			snap.KeepalivePaused = true
@@ -517,10 +556,16 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 			snap.ChatCap = 0
 		}
 		if !snap.UsedKnown && snap.GuardChat && chat >= snap.ChatCap {
-			snap.ChatBlocked = true
+			snap.ChatOverLimit = true
 		}
 	} else {
 		snap.KeepaliveCap = floor
+	}
+	if snap.ChatOverLimit {
+		snap.ChatStopFired = chatStopFired
+		snap.ChatBlocked = !chatStopFired
+	} else {
+		chatStopFired = false
 	}
 	snap.KeepaliveRemain = snap.KeepaliveCap - keep
 	if snap.KeepaliveRemain < 0 {
@@ -568,7 +613,7 @@ func pickDueWithinBudget(due []session, remain int64) []session {
 }
 
 func chatGuardResponse() pluginapi.RequestInterceptResponse {
-	msg := "CPA 对话先停，避免一发打穿 5 小时额度。保活仍会用留下的一截刷新 cache；窗口回落后再发消息。"
+	msg := "CPA 对话先停这一发，避免打穿 5 小时额度。下一发会放行；若额度已刷新就会继续，仍超停线再拦一次。"
 	body, _ := json.Marshal(map[string]any{
 		"type": "error",
 		"error": map[string]string{

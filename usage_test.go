@@ -222,6 +222,100 @@ func TestGuardChatIntercept(t *testing.T) {
 	}
 }
 
+
+func interceptChat(t *testing.T, body []byte) pluginapi.RequestInterceptResponse {
+	t.Helper()
+	raw, _ := json.Marshal(pluginapi.RequestInterceptRequest{
+		ToFormat: "claude",
+		Model:    "claude-opus-5",
+		Body:     body,
+	})
+	resp, err := handleInterceptBefore(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(resp, &env); err != nil {
+		t.Fatal(err)
+	}
+	var out pluginapi.RequestInterceptResponse
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func recordFiveHour(util string, reset string) {
+	h := http.Header{
+		"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+		"Anthropic-Ratelimit-Unified-5h-Utilization": []string{util},
+	}
+	if reset != "" {
+		h.Set("Anthropic-Ratelimit-Unified-5h-Reset", reset)
+	}
+	recordUsage(pluginapi.UsageRecord{
+		Provider:        "claude",
+		Model:           "claude-opus-5",
+		Detail:          pluginapi.UsageDetail{InputTokens: 100, OutputTokens: 1},
+		ResponseHeaders: h,
+	})
+}
+
+func TestChatStopIsOneShotThenAllows(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordFiveHour("0.96", "")
+	body := claudeBody("下一发不该再拦", "sys")
+	first := interceptChat(t, body)
+	if !first.Terminate || first.StatusCode != 429 {
+		t.Fatalf("first terminate=%v status=%d", first.Terminate, first.StatusCode)
+	}
+	second := interceptChat(t, body)
+	if second.Terminate {
+		t.Fatal("second chat after one-shot stop must be allowed through")
+	}
+	snap := currentBudget(time.Now())
+	if snap.ChatBlocked {
+		t.Fatal("status must not keep showing blocked after the one-shot")
+	}
+	if !snap.ChatStopFired || !snap.ChatOverLimit {
+		t.Fatalf("over=%v fired=%v", snap.ChatOverLimit, snap.ChatStopFired)
+	}
+}
+
+func TestChatStopRearmsAfterUtilDrops(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordFiveHour("0.96", "")
+	body := claudeBody("额度回落后再停", "sys")
+	if out := interceptChat(t, body); !out.Terminate {
+		t.Fatal("expected first stop")
+	}
+	recordFiveHour("0.20", "")
+	if snap := currentBudget(time.Now()); snap.ChatBlocked || snap.ChatStopFired {
+		t.Fatalf("refreshed quota should clear stop blocked=%v fired=%v", snap.ChatBlocked, snap.ChatStopFired)
+	}
+	recordFiveHour("0.97", "")
+	if out := interceptChat(t, body); !out.Terminate || out.StatusCode != 429 {
+		t.Fatal("crossing the stop line again should one-shot stop")
+	}
+}
+
+func TestChatStopClearsAfterFiveHourReset(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	past := fmt.Sprintf("%d", time.Now().Add(-time.Minute).Unix())
+	recordFiveHour("0.96", past)
+	snap := currentBudget(time.Now())
+	if snap.ChatBlocked || snap.ChatOverLimit || snap.UsedKnown {
+		t.Fatalf("expired 5h window must not keep chat stopped blocked=%v over=%v known=%v", snap.ChatBlocked, snap.ChatOverLimit, snap.UsedKnown)
+	}
+	body := claudeBody("窗口已经刷新", "sys")
+	if out := interceptChat(t, body); out.Terminate {
+		t.Fatal("chat must pass after 5h reset even if last header was 96%")
+	}
+}
+
 func TestSaveSnapshotSkipsKeepaliveReplay(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)

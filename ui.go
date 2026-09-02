@@ -38,6 +38,7 @@ type statusView struct {
 	ReservePercent int
 	StopPercent    int
 	ChatBlocked    bool
+	ChatStopFired  bool
 	KeepPaused     bool
 	HasQuotaLog    bool
 	QuotaLog       []quotaRow
@@ -115,6 +116,7 @@ func buildStatusView(st statusPage) statusView {
 		ReservePercent: st.Budget.ReservePercent,
 		StopPercent:    stopPercentFromReserve(st.Budget.ReservePercent),
 		ChatBlocked:    st.Budget.ChatBlocked,
+		ChatStopFired:  st.Budget.ChatStopFired,
 		KeepPaused:     st.Budget.KeepalivePaused,
 		Version:        st.Version,
 		HasQuotaLog:    len(st.QuotaLog) > 0,
@@ -128,7 +130,9 @@ func buildStatusView(st statusPage) statusView {
 	}
 	switch {
 	case st.Budget.ChatBlocked:
-		view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活，避免一发打穿 100%%。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活，避免一发打穿 100%%。下一发会放行。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+	case st.Budget.ChatStopFired:
+		view.BudgetNote = fmt.Sprintf("已在 %d%% 拦过一次。后续对话会放行，读到新额度后再决定要不要再停。", st.Budget.BlockAtPercent)
 	case st.Budget.KeepalivePaused:
 		view.BudgetNote = st.Budget.PauseReason
 	case st.Budget.UsedKnown:
@@ -177,7 +181,11 @@ func buildStatusView(st statusPage) statusView {
 	case st.Budget.ChatBlocked:
 		view.State = "armed"
 		view.StateLabel = "对话已限流"
-		view.StateHint = "5 小时额度快用完。拦截发生在 CPA 本地，请求不会打到 Anthropic。最后一截留给缓存保活，窗口回落后会自动放开。"
+		view.StateHint = "5 小时额度快用完。这一发在 CPA 本地拦住。下一发会放行；额度刷新后继续，仍超停线再拦一次。"
+	case st.Budget.ChatStopFired:
+		view.State = "armed"
+		view.StateLabel = "已拦一次，后续放行"
+		view.StateHint = "停线已经触发过一次。现在放行对话去读新的 5 小时额度，再决定要不要再停。"
 	case st.Budget.KeepalivePaused && st.EnabledCount > 0:
 		view.State = "armed"
 		view.StateLabel = "保活暂停"
@@ -577,7 +585,10 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <span class="hint">默认 95。98 太薄，一发长对话容易打穿 100%。改完会记住，重启 CPA 也还在。</span>
   </form>
   {{if .ChatBlocked}}
-  <div class="warn">CPA 上的新对话请求已被拦住，避免一发打穿 5 小时额度。保活仍会继续；窗口回落后会自动恢复。</div>
+  <div class="warn">CPA 上的这一发对话已被拦住，避免打穿 5 小时额度。下一发会放行；额度刷新后继续，仍超停线再拦一次。保活不受影响。</div>
+  {{end}}
+  {{if and .ChatStopFired (not .ChatBlocked)}}
+  <div class="warn">已拦过一次。后续对话会放行，用新的额度头再决定要不要停。</div>
   {{end}}
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>

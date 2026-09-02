@@ -314,6 +314,8 @@ func resetSessionsForTest() {
 	lastCalibOK = false
 	unitsPerUtil = 0
 	quotaSamples = nil
+	fiveHourReset = time.Time{}
+	chatStopFired = false
 	subagentSkipped = 0
 	lastSubagentAt = time.Time{}
 	lastSubagentKind = ""

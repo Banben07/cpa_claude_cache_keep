@@ -28,6 +28,7 @@ func TestLimitOutputKeepsPrefix(t *testing.T) {
 	}
 }
 
+
 func TestIsClaudeUpstream(t *testing.T) {
 	if !isClaudeUpstream("claude", "claude-opus-5") {
 		t.Fatal("expected claude upstream")
