@@ -21,9 +21,11 @@ type session struct {
 	LastSeen      time.Time
 	LastPingAt    time.Time
 	LastPingError string
-	LastChatUnits int64
-	LastPingUnits int64
-	PingExpensive bool
+	LastChatUnits      int64
+	LastPingUnits      int64
+	LastPingCacheRead  int64
+	LastPingCacheWrite int64
+	PingExpensive      bool
 	Info          bodyInfo
 }
 

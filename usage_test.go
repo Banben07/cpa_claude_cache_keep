@@ -29,6 +29,83 @@ func TestWeightedUnitsPrefersCacheRead(t *testing.T) {
 	}
 }
 
+func TestCacheVerdict(t *testing.T) {
+	if got := cacheVerdict(0, 0); got != "—" {
+		t.Fatalf("empty=%q", got)
+	}
+	if got := cacheVerdict(298409, 799); !strings.Contains(got, "命中") || !strings.Contains(got, "298.4K") {
+		t.Fatalf("hit=%q", got)
+	}
+	if got := cacheVerdict(0, 302619); !strings.Contains(got, "未命中") {
+		t.Fatalf("miss=%q", got)
+	}
+}
+
+func TestKeepaliveCacheShowsOnStatus(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("保活缓存", "sys"))
+	mu.Lock()
+	var id string
+	for k := range sessions {
+		id = k
+	}
+	currentPingID = id
+	keepaliveActive = 1
+	mu.Unlock()
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail: pluginapi.UsageDetail{
+			InputTokens:         2,
+			CacheReadTokens:     298409,
+			CacheCreationTokens: 799,
+			OutputTokens:        1,
+		},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.14"},
+		},
+	})
+	html := renderStatusHTML()
+	if !strings.Contains(html, "命中") {
+		t.Fatal("status should show cache hit")
+	}
+	if !strings.Contains(html, "缓存") {
+		t.Fatal("quota table should have a cache column")
+	}
+
+	resetSessionsForTest()
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("保活未命中", "sys"))
+	mu.Lock()
+	for k := range sessions {
+		id = k
+	}
+	currentPingID = id
+	keepaliveActive = 1
+	mu.Unlock()
+	recordUsage(pluginapi.UsageRecord{
+		Provider: "claude",
+		Model:    "claude-opus-5",
+		Detail: pluginapi.UsageDetail{
+			InputTokens:         2,
+			CacheCreationTokens: 302619,
+			OutputTokens:        1,
+		},
+		ResponseHeaders: http.Header{
+			"Anthropic-Ratelimit-Unified-5h-Status":      []string{"allowed"},
+			"Anthropic-Ratelimit-Unified-5h-Utilization": []string{"0.23"},
+		},
+	})
+	html = renderStatusHTML()
+	if !strings.Contains(html, "未命中") {
+		t.Fatal("status should show cache miss")
+	}
+	if !strings.Contains(html, "已暂停") {
+		t.Fatal("expensive ping should pause the next slot")
+	}
+}
+
 func TestKeepaliveReserveBlocksChatWhenBudgetKnown(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)

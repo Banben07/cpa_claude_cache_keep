@@ -58,6 +58,7 @@ type quotaRow struct {
 	Status7d string
 	Unified  string
 	Raw      string
+	Cache    string
 	RowClass string
 }
 
@@ -78,6 +79,8 @@ type sessionRow struct {
 	CacheTTL    string
 	BodySize    string
 	Messages    string
+	PingCache   string
+	PingPaused  bool
 	RowClass    string
 }
 
@@ -161,11 +164,18 @@ func buildStatusView(st statusPage) statusView {
 			CacheTTL:    dash(item.Info.CacheTTL),
 			BodySize:    formatBytes(len(item.Body)),
 			Messages:    dashInt(item.Info.MessageCount),
+			PingCache:   cacheVerdict(item.LastPingCacheRead, item.LastPingCacheWrite),
+			PingPaused:  item.PingExpensive,
 			RowClass:    "off",
 		}
 		if item.Enabled {
-			row.NextPing = formatTime(next)
-			row.NextPingAgo = formatUntil(st.Now, next)
+			if item.PingExpensive {
+				row.NextPing = "已暂停"
+				row.NextPingAgo = "上次未命中，避免反复重写"
+			} else {
+				row.NextPing = formatTime(next)
+				row.NextPingAgo = formatUntil(st.Now, next)
+			}
 		} else {
 			row.NextPing = "—"
 		}
@@ -280,6 +290,7 @@ func buildQuotaRow(now time.Time, sample quotaSample) quotaRow {
 	} else {
 		row.Raw = strings.Join(raw, " · ")
 	}
+	row.Cache = cacheVerdict(sample.CacheRead, sample.CacheWrite)
 	return row
 }
 
@@ -610,8 +621,9 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
         <div class="times">
           <span>最近请求 {{.SavedAt}} {{.SavedAgo}}</span>
           <span>下次保活 {{.NextPing}} {{.NextPingAgo}}</span>
-          <span>上次保活 {{.LastPing}} {{.LastPingAgo}}</span>
+          <span>上次保活 {{.LastPing}} {{.LastPingAgo}}{{if ne .PingCache "—"}} · {{.PingCache}}{{end}}</span>
         </div>
+        {{if .PingPaused}}<div class="row-err">上次保活未命中缓存，已暂停后续心跳，避免把整段前缀反复按 1h 写入计费。新对话后会重新开。</div>{{end}}
         {{if .PingError}}<div class="row-err">{{.PingError}}</div>{{end}}
       </div>
       <a class="forget" data-action href="{{.ForgetHref}}">忘记</a>
@@ -631,18 +643,19 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
   {{end}}
   <section class="quota">
     <h2>额度记录</h2>
-    <p class="sub">每次 Claude 响应回来后，插件从 HTTP 头解析的结果。用来确认有没有真正读到 <code>Anthropic-Ratelimit-Unified-5h-*</code>。最新在上，最多 5 条；CPA 重启后清空。</p>
+    <p class="sub">每次 Claude 响应回来后解析的用量。缓存列看 <code>cache_read</code> / <code>cache_creation</code>；5 小时列是额度头。最新在上，最多 5 条；CPA 重启后清空。</p>
     {{if .HasQuotaLog}}
     <div class="scroll">
       <table class="quota-table">
         <thead>
-          <tr><th>时间</th><th>来源</th><th>5 小时</th><th>状态</th><th>7 天</th><th>原始头</th></tr>
+          <tr><th>时间</th><th>来源</th><th>缓存</th><th>5 小时</th><th>状态</th><th>7 天</th><th>原始头</th></tr>
         </thead>
         <tbody>
           {{range .QuotaLog}}
           <tr class="{{.RowClass}}">
             <td>{{.At}}<div class="raw">{{.Ago}} · {{.Kind}} · {{.Model}}</div></td>
             <td>{{.Kind}}</td>
+            <td>{{.Cache}}</td>
             <td class="util">{{.Util5h}}</td>
             <td>{{.Status5h}}</td>
             <td>{{.Util7d}}{{if ne .Status7d "—"}}<div class="raw">{{.Status7d}}</div>{{end}}</td>
@@ -653,7 +666,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
       </table>
     </div>
     {{else}}
-    <p class="sub">还没有用量回调。用 Claude Code 走 CPA 正常聊一轮后，这里应出现 5h-utilization / 5h-status。如果只有「未读到」，说明这次响应没带用量头。</p>
+    <p class="sub">还没有用量回调。用 Claude Code 走 CPA 正常聊一轮后，这里应出现缓存命中情况和 5h-utilization。如果缓存是「—」，说明这次回调没带 token 明细。</p>
     {{end}}
   </section>
   <p class="foot">数据每 15 秒静默更新 · {{.Now}} · {{.Version}} · 不会显示 prompt 正文</p>

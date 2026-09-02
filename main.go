@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.8.2"
+	pluginVersion = "0.8.3"
 )
 
 type envelope struct {

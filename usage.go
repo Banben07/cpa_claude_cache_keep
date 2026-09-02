@@ -43,6 +43,8 @@ type quotaSample struct {
 	RawStatus7d   string
 	UnifiedStatus string
 	Units         int64
+	CacheRead     int64
+	CacheWrite    int64
 }
 
 type budgetSnapshot struct {
@@ -118,6 +120,30 @@ func weightedUnits(model string, d pluginapi.UsageDetail) int64 {
 	// uncached 1x, 1h cache write ~2x, cache read 0.1x, output/reasoning ~5x.
 	units := uncached + cacheWrite*2 + cacheRead/10 + out*5
 	return units * modelWeight(model)
+}
+
+func cacheTokensFromDetail(d pluginapi.UsageDetail) (read, write int64) {
+	read = d.CacheReadTokens
+	if read == 0 {
+		read = d.CachedTokens
+	}
+	return read, d.CacheCreationTokens
+}
+
+func cacheVerdict(read, write int64) string {
+	if read <= 0 && write <= 0 {
+		return "—"
+	}
+	if write > read && write >= 20000 {
+		return "未命中 · 写 " + formatUnits(write)
+	}
+	if read > 0 && write > 0 {
+		return "命中 " + formatUnits(read) + " · 写 " + formatUnits(write)
+	}
+	if read > 0 {
+		return "命中 " + formatUnits(read)
+	}
+	return "写 " + formatUnits(write)
 }
 
 func modelWeight(model string) int64 {
@@ -202,6 +228,7 @@ func parseQuotaSample(rec pluginapi.UsageRecord, now time.Time, keepalive bool) 
 		UnifiedStatus: strings.ToLower(headerGetCI(h, "Anthropic-Ratelimit-Unified-Status")),
 		Reset5h:       parseUnixTime(rawReset5h),
 	}
+	sample.CacheRead, sample.CacheWrite = cacheTokensFromDetail(rec.Detail)
 	if rec.Failed {
 		sample.Units = 0
 	} else {
@@ -344,7 +371,8 @@ func recordUsage(rec pluginapi.UsageRecord) {
 		if currentPingID != "" {
 			if item := sessions[currentPingID]; item != nil {
 				item.LastPingUnits = units
-				if rec.Detail.CacheCreationTokens > 20000 && rec.Detail.CacheCreationTokens > rec.Detail.CacheReadTokens {
+				item.LastPingCacheRead, item.LastPingCacheWrite = cacheTokensFromDetail(rec.Detail)
+				if item.LastPingCacheWrite > 20000 && item.LastPingCacheWrite > item.LastPingCacheRead {
 					item.PingExpensive = true
 				}
 			}

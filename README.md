@@ -4,7 +4,7 @@
 
 只处理 Claude 上游。Codex / GPT / Gemini / Grok 会跳过。没有 `max_tokens` 的请求（常见是 `/v1/messages/count_tokens`）也不会进保活名单。
 
-当前版本 **0.8.2**。
+当前版本 **0.8.3**。
 
 ## 做什么
 
@@ -114,7 +114,7 @@ plugins:
 
 ## 怎么确认有效
 
-保活响应当里：
+保活响应当里，或状态页额度表「缓存」列：
 
 - `cache_read_input_tokens` 很大，`cache_creation_input_tokens` 接近 0 → 命中，TTL 已刷新
 - `cache_creation` 突然变大 → 前缀变了，不要继续空 ping
