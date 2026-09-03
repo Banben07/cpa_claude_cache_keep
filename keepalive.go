@@ -23,19 +23,20 @@ type bodyInfo struct {
 }
 
 type pluginConfig struct {
-	IntervalMinutes  int   `yaml:"interval_minutes"`
-	MaxTokens        int   `yaml:"max_tokens"`
-	MaxSessions      int   `yaml:"max_sessions"`
-	IdleEvictMinutes int   `yaml:"idle_evict_minutes"`
-	WindowMinutes    int   `yaml:"window_minutes"`
-	ReservePercent   int   `yaml:"reserve_percent"`
-	StopPercent      int   `yaml:"stop_percent"`
-	FiveHourBudget   int64 `yaml:"five_hour_budget"`
-	GuardChat        *bool `yaml:"guard_chat"`
+	IntervalMinutes  int    `yaml:"interval_minutes"`
+	MaxTokens        int    `yaml:"max_tokens"`
+	MaxSessions      int    `yaml:"max_sessions"`
+	IdleEvictMinutes int    `yaml:"idle_evict_minutes"`
+	WindowMinutes    int    `yaml:"window_minutes"`
+	ReservePercent   int    `yaml:"reserve_percent"`
+	StopPercent      int    `yaml:"stop_percent"`
+	FiveHourBudget   int64  `yaml:"five_hour_budget"`
+	GuardChat        *bool  `yaml:"guard_chat"`
+	MessagesURL      string `yaml:"messages_url"`
 }
 
 func defaultConfig() pluginConfig {
-	return pluginConfig{IntervalMinutes: 50, MaxTokens: 1, MaxSessions: 8, IdleEvictMinutes: 180, WindowMinutes: defaultWindowMin, ReservePercent: defaultReservePct}
+	return pluginConfig{IntervalMinutes: 50, MaxTokens: 1, MaxSessions: 8, IdleEvictMinutes: 180, WindowMinutes: defaultWindowMin, ReservePercent: defaultReservePct, MessagesURL: defaultMessagesURL}
 }
 
 func parseConfig(raw []byte) pluginConfig {
@@ -77,6 +78,7 @@ func parseConfig(raw []byte) pluginConfig {
 	if cfg.FiveHourBudget < 0 {
 		cfg.FiveHourBudget = 0
 	}
+	cfg.MessagesURL = normalizeMessagesURL(cfg.MessagesURL)
 	return cfg
 }
 
@@ -115,7 +117,6 @@ func limitOutput(body []byte, maxTokens int) ([]byte, error) {
 	}
 	return out, nil
 }
-
 
 func inspectBody(body []byte) bodyInfo {
 	info := bodyInfo{
@@ -216,6 +217,62 @@ func looksLikeCompact(text string) bool {
 		}
 	}
 	return strings.Contains(t, "<summary>") && strings.Contains(t, "continue")
+}
+
+func lastUserText(body []byte) string {
+	var found string
+	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+		role := strings.ToLower(msg.Get("role").String())
+		if role == "user" {
+			found = contentText(msg.Get("content"))
+		}
+		return true
+	})
+	return strings.TrimSpace(found)
+}
+
+func isCompactSummaryPrompt(text string) bool {
+	t := strings.ToLower(text)
+	if t == "" {
+		return false
+	}
+	markers := []string{
+		"critical: respond with text only. do not call any tools.",
+		"your task is to create a detailed summary of the conversation so far",
+		"an <analysis> block followed by a <summary> block",
+	}
+	for _, marker := range markers {
+		if !strings.Contains(t, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasCompactAPIEdit(body []byte) bool {
+	found := false
+	gjson.GetBytes(body, "context_management.edits").ForEach(func(_, edit gjson.Result) bool {
+		if strings.Contains(strings.ToLower(edit.Get("type").String()), "compact") {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+func isCompactRequest(headers http.Header, body []byte) bool {
+	if looksLikeCompact(firstUserText(body)) || looksLikeCompact(lastUserText(body)) || looksLikeCompact(systemText(body)) {
+		return true
+	}
+	if isCompactSummaryPrompt(lastUserText(body)) {
+		return true
+	}
+	if hasCompactAPIEdit(body) {
+		return true
+	}
+	beta := strings.ToLower(headerGetCI(headers, "Anthropic-Beta"))
+	return strings.Contains(beta, "compact-2026")
 }
 
 func sessionLabel(body []byte) string {

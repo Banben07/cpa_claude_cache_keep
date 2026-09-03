@@ -12,6 +12,13 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 )
 
+func TestParseConfigDefaultMessagesURL(t *testing.T) {
+	got := parseConfig(nil)
+	if got.MessagesURL != defaultMessagesURL {
+		t.Fatalf("messages_url=%q", got.MessagesURL)
+	}
+}
+
 func TestParseStopPercentOverridesReserve(t *testing.T) {
 	got := parseConfig([]byte("reserve_percent: 10\nstop_percent: 95\n"))
 	if got.ReservePercent != 5 {

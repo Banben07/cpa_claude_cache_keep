@@ -231,6 +231,72 @@ func TestHandleStatusToggleRedirects(t *testing.T) {
 	}
 }
 
+func TestHandleStatusPingRedirects(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	upsertSession("claude-opus-5", "claude", "claude", nil, claudeBody("手动保活", "sys"))
+	id := listSessions()[0].ID
+	setSessionEnabled(id, false)
+	mu.Lock()
+	sessions[id].PingExpensive = true
+	mu.Unlock()
+
+	var gotID string
+	orig := pingDo
+	pingDo = func(url string, headers http.Header, body []byte) (int, []byte, error) {
+		gotID = id
+		if !strings.Contains(string(body), `"max_tokens":1`) {
+			t.Fatalf("body=%s", body)
+		}
+		return http.StatusOK, []byte(`{"type":"message"}`), nil
+	}
+	t.Cleanup(func() { pingDo = orig })
+
+	raw, err := json.Marshal(pluginapi.ManagementRequest{
+		Path:  "/v0/resource/plugins/claude-cache-keepalive/status",
+		Query: url.Values{"ping": {id}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := handleStatusRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(resp, &env); err != nil {
+		t.Fatal(err)
+	}
+	var out pluginapi.ManagementResponse
+	if err := json.Unmarshal(env.Result, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.StatusCode != http.StatusSeeOther {
+		t.Fatalf("status=%d", out.StatusCode)
+	}
+	if gotID != id {
+		t.Fatal("did not ping this session")
+	}
+	got := listSessions()[0]
+	if got.LastPingAt.IsZero() {
+		t.Fatal("last ping not recorded")
+	}
+	if got.PingExpensive {
+		t.Fatal("manual ping should clear expensive pause")
+	}
+	if got.Enabled {
+		t.Fatal("manual ping should not re-enable the session")
+	}
+}
+
+func TestPingSessionNowMissing(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	if err := pingSessionNow("deadbeefdeadbeef"); err == nil {
+		t.Fatal("expected missing session")
+	}
+}
+
 func TestSanitizeSessionID(t *testing.T) {
 	if sanitizeSessionID("deadbeefdeadbeef") != "deadbeefdeadbeef" {
 		t.Fatal("valid id rejected")

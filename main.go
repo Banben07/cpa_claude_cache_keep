@@ -70,7 +70,7 @@ import (
 
 const (
 	pluginID      = "claude-cache-keepalive"
-	pluginVersion = "0.8.3"
+	pluginVersion = "0.8.7"
 )
 
 type envelope struct {
@@ -119,11 +119,6 @@ type statusPage struct {
 	LastSubagentKind  string
 	LastSubagentAt    time.Time
 	LastSubagentLabel string
-}
-
-type hostModelExecutionRequest struct {
-	pluginapi.HostModelExecutionRequest
-	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 var (
@@ -246,6 +241,7 @@ func pluginRegistration() registration {
 				{Name: "reserve_percent", Type: pluginapi.ConfigFieldTypeInteger, Description: "How much of the 5-hour window to leave after stop_percent. Default 5. Ignored if stop_percent is set."},
 				{Name: "five_hour_budget", Type: pluginapi.ConfigFieldTypeInteger, Description: "Fallback weighted budget if upstream 5h headers are missing. 0 uses Anthropic utilization headers."},
 				{Name: "guard_chat", Type: pluginapi.ConfigFieldTypeBoolean, Description: "Block new Claude chat through CPA once the 5-hour window hits the reserve line. Default true."},
+				{Name: "messages_url", Type: pluginapi.ConfigFieldTypeString, Description: "CPA /v1/messages URL used for keepalive replay. Default http://127.0.0.1:8317/v1/messages."},
 			},
 		},
 		Capabilities: registrationCapabilities{
@@ -332,6 +328,14 @@ func handleStatusRequest(raw []byte) ([]byte, error) {
 	}
 	if id := sanitizeSessionID(queryGet(req.Query, "rename")); id != "" {
 		renameSession(id, queryGet(req.Query, "name"))
+		redirect = true
+	}
+	if id := sanitizeSessionID(queryGet(req.Query, "ping")); id != "" {
+		if err := pingSessionNow(id); err != nil {
+			_ = hostLog(fmt.Sprintf("claude-cache-keepalive manual ping failed: %s", err.Error()))
+		} else {
+			_ = hostLog("claude-cache-keepalive manual ping ok")
+		}
 		redirect = true
 	}
 	if stop, ok := parseStopQuery(queryGet(req.Query, "stop")); ok {
@@ -442,6 +446,7 @@ func pingOnce() (bool, int, error) {
 	pinging = true
 	maxTokens := cfg.MaxTokens
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
+	messagesURL := cfg.MessagesURL
 	mu.Unlock()
 	defer func() {
 		mu.Lock()
@@ -458,7 +463,7 @@ func pingOnce() (bool, int, error) {
 	}
 	var errs []string
 	for _, snap := range targets {
-		err := pingSession(snap, maxTokens)
+		err := pingSession(snap, maxTokens, messagesURL)
 		recordSessionPing(snap.ID, time.Now(), err)
 		if err != nil {
 			errs = append(errs, snap.Label+": "+err.Error())
@@ -470,7 +475,7 @@ func pingOnce() (bool, int, error) {
 	return true, len(targets), nil
 }
 
-func pingSession(snap session, maxTokens int) error {
+func pingSession(snap session, maxTokens int, messagesURL string) error {
 	if len(snap.Body) == 0 {
 		return fmt.Errorf("empty snapshot")
 	}
@@ -478,13 +483,8 @@ func pingSession(snap session, maxTokens int) error {
 	if err != nil {
 		return err
 	}
-	entry := snap.SourceFormat
-	exit := snap.ToFormat
-	if entry == "" {
-		entry = "claude"
-	}
-	if exit == "" {
-		exit = entry
+	if messagesURL == "" {
+		messagesURL = defaultMessagesURL
 	}
 	mu.Lock()
 	keepaliveActive++
@@ -499,16 +499,36 @@ func pingSession(snap session, maxTokens int) error {
 		currentPingID = ""
 		mu.Unlock()
 	}()
-	_, err = callHost(pluginabi.MethodHostModelExecute, hostModelExecutionRequest{
-		HostModelExecutionRequest: pluginapi.HostModelExecutionRequest{
-			EntryProtocol: entry,
-			ExitProtocol:  exit,
-			Model:         snap.Model,
-			Stream:        false,
-			Body:          body,
-			Headers:       withKeepaliveHeader(snap.Headers),
-		},
-	})
+	return replayPing(messagesURL, snap.Headers, body)
+}
+
+func pingSessionNow(id string) error {
+	snap, ok := cloneSessionByID(id)
+	if !ok {
+		return fmt.Errorf("没有这个会话")
+	}
+	if currentBudget(time.Now()).KeepalivePaused {
+		err := fmt.Errorf("5 小时额度已满，手动保活也先停")
+		recordSessionPing(id, time.Now(), err)
+		return err
+	}
+	mu.Lock()
+	maxTokens := cfg.MaxTokens
+	messagesURL := cfg.MessagesURL
+	if item := sessions[id]; item != nil {
+		item.PingExpensive = false
+	}
+	mu.Unlock()
+	err := pingSession(snap, maxTokens, messagesURL)
+	recordSessionPing(id, time.Now(), err)
+	mu.Lock()
+	lastPingAt = time.Now()
+	if err != nil {
+		lastErr = err.Error()
+	} else {
+		lastErr = ""
+	}
+	mu.Unlock()
 	return err
 }
 

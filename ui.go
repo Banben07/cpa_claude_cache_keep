@@ -38,8 +38,11 @@ type statusView struct {
 	ReservePercent int
 	StopPercent    int
 	ChatBlocked    bool
-	ChatStopFired  bool
 	KeepPaused     bool
+	HasReset       bool
+	UsedKnown      bool
+	ResetAt        string
+	ResetIn        string
 	HasQuotaLog    bool
 	QuotaLog       []quotaRow
 	SubagentNote   string
@@ -80,6 +83,7 @@ type sessionRow struct {
 	BodySize    string
 	Messages    string
 	PingCache   string
+	PingHref    string
 	PingPaused  bool
 	RowClass    string
 }
@@ -119,8 +123,11 @@ func buildStatusView(st statusPage) statusView {
 		ReservePercent: st.Budget.ReservePercent,
 		StopPercent:    stopPercentFromReserve(st.Budget.ReservePercent),
 		ChatBlocked:    st.Budget.ChatBlocked,
-		ChatStopFired:  st.Budget.ChatStopFired,
 		KeepPaused:     st.Budget.KeepalivePaused,
+		HasReset:       !st.Budget.ResetAt.IsZero(),
+		UsedKnown:      st.Budget.UsedKnown,
+		ResetAt:        formatTime(st.Budget.ResetAt),
+		ResetIn:        formatUntil(st.Now, st.Budget.ResetAt),
 		Version:        st.Version,
 		HasQuotaLog:    len(st.QuotaLog) > 0,
 	}
@@ -133,9 +140,11 @@ func buildStatusView(st statusPage) statusView {
 	}
 	switch {
 	case st.Budget.ChatBlocked:
-		view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，最后 %d%% 留给保活，避免一发打穿 100%%。下一发会放行。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
-	case st.Budget.ChatStopFired:
-		view.BudgetNote = fmt.Sprintf("已在 %d%% 拦过一次。后续对话会放行，读到新额度后再决定要不要再停。", st.Budget.BlockAtPercent)
+		if !st.Budget.ResetAt.IsZero() {
+			view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，等到额度刷新（%s，%s）或用量掉回停线。最后 %d%% 留给保活。/compact 仍放行。", st.Budget.BlockAtPercent, formatTime(st.Budget.ResetAt), formatUntil(st.Now, st.Budget.ResetAt), st.Budget.ReservePercent)
+		} else {
+			view.BudgetNote = fmt.Sprintf("CPA 对话已在 %d%% 停住，等到用量掉回停线或读到刷新时间。最后 %d%% 留给保活。/compact 仍放行。", st.Budget.BlockAtPercent, st.Budget.ReservePercent)
+		}
 	case st.Budget.KeepalivePaused:
 		view.BudgetNote = st.Budget.PauseReason
 	case st.Budget.UsedKnown:
@@ -156,6 +165,7 @@ func buildStatusView(st statusPage) statusView {
 			Enabled:     item.Enabled,
 			ToggleHref:  toggleHref(item.ID, !item.Enabled),
 			ForgetHref:  "?forget=" + item.ID,
+			PingHref:    "?ping=" + item.ID,
 			SavedAt:     formatTime(item.LastSeen),
 			SavedAgo:    formatAgo(st.Now, item.LastSeen),
 			LastPing:    formatTime(item.LastPingAt),
@@ -191,11 +201,11 @@ func buildStatusView(st statusPage) statusView {
 	case st.Budget.ChatBlocked:
 		view.State = "armed"
 		view.StateLabel = "对话已限流"
-		view.StateHint = "5 小时额度快用完。这一发在 CPA 本地拦住。下一发会放行；额度刷新后继续，仍超停线再拦一次。"
-	case st.Budget.ChatStopFired:
-		view.State = "armed"
-		view.StateLabel = "已拦一次，后续放行"
-		view.StateHint = "停线已经触发过一次。现在放行对话去读新的 5 小时额度，再决定要不要再停。"
+		if !st.Budget.ResetAt.IsZero() {
+			view.StateHint = fmt.Sprintf("5 小时额度过了停线。对话会一直拦到刷新（%s）或用量掉回停线。/compact 仍可走。", formatTime(st.Budget.ResetAt))
+		} else {
+			view.StateHint = "5 小时额度过了停线。对话会一直拦到用量掉回停线，或读到刷新时间。/compact 仍可走。"
+		}
 	case st.Budget.KeepalivePaused && st.EnabledCount > 0:
 		view.State = "armed"
 		view.StateLabel = "保活暂停"
@@ -525,6 +535,14 @@ h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -.01em;
   padding: 6px 8px; border-radius: 8px; border: 1px solid transparent;
 }
 .forget:hover { color: var(--err); border-color: var(--line); }
+.actions { display: flex; flex-direction: column; gap: 6px; align-items: flex-end; }
+.ping {
+  color: var(--armed); font-size: 12px; text-decoration: none;
+  padding: 6px 8px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--armed-bg);
+}
+.ping:hover { border-color: color-mix(in srgb, var(--armed) 55%, var(--line)); }
+.ping[aria-busy="true"] { opacity: .65; pointer-events: none; }
 .error {
   margin-top: 14px;
   padding: 12px 14px;
@@ -585,7 +603,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <div class="stat"><div class="k">最近一次到期</div><div class="v">{{.NextPing}}<small>{{.NextPingAgo}}</small></div></div>
   </div>
   <div class="stats">
-    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>CPA 对话停在 {{.BudgetBlock}}</small></div></div>
+    <div class="stat"><div class="k">5 小时已用</div><div class="v">{{.BudgetUsed}}<small>CPA 对话停在 {{.BudgetBlock}}{{if .HasReset}} · 刷新 {{.ResetAt}}（{{.ResetIn}}）{{else if .UsedKnown}} · 还没读到刷新时间{{end}}</small></div></div>
     <div class="stat"><div class="k">CPA 对话 / 保活</div><div class="v">{{.BudgetChat}} / {{.BudgetKeep}}<small>{{.BudgetNote}}</small></div></div>
   </div>
   <form class="stop-form" data-stop action="" method="get">
@@ -596,10 +614,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     <span class="hint">默认 95。98 太薄，一发长对话容易打穿 100%。改完会记住，重启 CPA 也还在。</span>
   </form>
   {{if .ChatBlocked}}
-  <div class="warn">CPA 上的这一发对话已被拦住，避免打穿 5 小时额度。下一发会放行；额度刷新后继续，仍超停线再拦一次。保活不受影响。</div>
-  {{end}}
-  {{if and .ChatStopFired (not .ChatBlocked)}}
-  <div class="warn">已拦过一次。后续对话会放行，用新的额度头再决定要不要停。</div>
+  <div class="warn">CPA 对话已停在停线。等到 5 小时额度刷新{{if .HasReset}}（{{.ResetAt}}，{{.ResetIn}}）{{end}}或用量掉回停线。/compact 仍可走。保活不受停线影响。</div>
   {{end}}
   {{if and .KeepPaused (not .ChatBlocked)}}
   <div class="warn">{{.BudgetNote}}</div>
@@ -626,11 +641,14 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
         {{if .PingPaused}}<div class="row-err">上次保活未命中缓存，已暂停后续心跳，避免把整段前缀反复按 1h 写入计费。新对话后会重新开。</div>{{end}}
         {{if .PingError}}<div class="row-err">{{.PingError}}</div>{{end}}
       </div>
-      <a class="forget" data-action href="{{.ForgetHref}}">忘记</a>
+      <div class="actions">
+        <a class="ping" data-action data-ping href="{{.PingHref}}">立刻保活</a>
+        <a class="forget" data-action href="{{.ForgetHref}}">忘记</a>
+      </div>
     </article>
     {{end}}
   </div>
-  <p class="hint">点左侧方块勾选或取消保活。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在上面填的百分比停住，留下一截给保活，也避免最后一发打穿 100%。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
+  <p class="hint">点左侧方块勾选或取消定时保活。「立刻保活」只打这一路，不等倒计时。会话名称可以自己改，留空再保存会回到首条消息。CPA 对话会在上面填的百分比停住，留下一截给保活，也避免最后一发打穿 100%。Claude Code 的 Task/Agent 子代理会单独成一路请求，插件认出来后不保活。</p>
   {{if .SubagentNote}}
   <p class="hint">{{.SubagentNote}}</p>
   {{end}}
@@ -674,6 +692,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
 <script>
 (function () {
   var timer = null;
+  var busy = false;
   function apply(html, url) {
     var doc = new DOMParser().parseFromString(html, "text/html");
     var next = doc.getElementById("view");
@@ -702,8 +721,18 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
       return;
     }
     ev.preventDefault();
+    if (a.getAttribute("aria-busy") === "true") {
+      return;
+    }
+    if (a.hasAttribute("data-ping")) {
+      busy = true;
+      a.setAttribute("aria-busy", "true");
+      a.textContent = "保活中…";
+    }
     load(a.href).catch(function () {
       location.assign(a.href);
+    }).then(function () {
+      busy = false;
     });
   });
   document.addEventListener("submit", function (ev) {
@@ -719,7 +748,7 @@ code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fo
     });
   });
   timer = setInterval(function () {
-    if (document.hidden) {
+    if (document.hidden || busy) {
       return;
     }
     if (document.activeElement && document.activeElement.closest("form[data-rename], form[data-stop]")) {

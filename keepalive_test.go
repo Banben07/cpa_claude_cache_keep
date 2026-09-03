@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -27,7 +28,6 @@ func TestLimitOutputKeepsPrefix(t *testing.T) {
 		t.Fatalf("model=%v", parsed["model"])
 	}
 }
-
 
 func TestIsClaudeUpstream(t *testing.T) {
 	if !isClaudeUpstream("claude", "claude-opus-5") {
@@ -142,6 +142,9 @@ func TestRenderStatusHTMLEmptyAndArmed(t *testing.T) {
 	if !strings.Contains(html, "下次保活") {
 		t.Fatal("missing per-session next ping")
 	}
+	if !strings.Contains(html, "立刻保活") || !strings.Contains(html, "?ping=") {
+		t.Fatal("missing per-session manual ping")
+	}
 	if strings.Contains(html, `http-equiv="refresh"`) {
 		t.Fatal("full page refresh causes flicker")
 	}
@@ -188,5 +191,136 @@ func TestPluginRegistrationHasRequiredMetadata(t *testing.T) {
 	}
 	if decoded.Metadata.GitHubRepository == "" || !decoded.Capabilities.RequestInterceptor {
 		t.Fatalf("round-trip lost required fields: %+v", decoded)
+	}
+}
+
+func TestNormalizeMessagesURL(t *testing.T) {
+	if got := normalizeMessagesURL(""); got != defaultMessagesURL {
+		t.Fatalf("empty=%q", got)
+	}
+	if got := normalizeMessagesURL(" /v1/messages "); got != "http://127.0.0.1:8317/v1/messages" {
+		t.Fatalf("path=%q", got)
+	}
+	if got := normalizeMessagesURL("http://127.0.0.1:9000/v1/messages"); got != "http://127.0.0.1:9000/v1/messages" {
+		t.Fatalf("full=%q", got)
+	}
+}
+
+func TestParseConfigMessagesURL(t *testing.T) {
+	got := parseConfig(nil)
+	if got.MessagesURL != defaultMessagesURL {
+		t.Fatalf("default=%q", got.MessagesURL)
+	}
+	got = parseConfig([]byte("messages_url: http://127.0.0.1:9000/v1/messages\n"))
+	if got.MessagesURL != "http://127.0.0.1:9000/v1/messages" {
+		t.Fatalf("parsed=%q", got.MessagesURL)
+	}
+}
+
+func TestCopyPingHeaders(t *testing.T) {
+	in := http.Header{
+		"Authorization":            []string{"Bearer test"},
+		"Content-Length":           []string{"99"},
+		"Connection":               []string{"keep-alive"},
+		"Anthropic-Beta":           []string{"prompt-caching-2024-07-31"},
+		"Accept-Encoding":          []string{"gzip"},
+		"X-Claude-Code-Session-Id": []string{"sess-1"},
+	}
+	out := copyPingHeaders(in)
+	if out.Get("Authorization") != "Bearer test" {
+		t.Fatal("keep auth")
+	}
+	if out.Get("Anthropic-Beta") == "" || out.Get("X-Claude-Code-Session-Id") != "sess-1" {
+		t.Fatal("keep claude headers")
+	}
+	if out.Get(keepaliveHeaderKey) != keepaliveHeaderVal {
+		t.Fatal("keepalive header")
+	}
+	if out.Get("Content-Length") != "" || out.Get("Connection") != "" || out.Get("Accept-Encoding") != "" {
+		t.Fatalf("hop-by-hop leaked: %v", out)
+	}
+	if out.Get("Content-Type") != "application/json" {
+		t.Fatal("content-type")
+	}
+}
+
+func TestPingSessionPostsToMessages(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	var gotURL string
+	var gotBody []byte
+	var gotKeep, gotAuth, gotBeta string
+	orig := pingDo
+	pingDo = func(url string, headers http.Header, body []byte) (int, []byte, error) {
+		gotURL = url
+		gotBody = append([]byte(nil), body...)
+		gotKeep = headers.Get(keepaliveHeaderKey)
+		gotAuth = headers.Get("Authorization")
+		gotBeta = headers.Get("Anthropic-Beta")
+		return http.StatusOK, []byte(`{"type":"message"}`), nil
+	}
+	t.Cleanup(func() { pingDo = orig })
+
+	err := pingSession(session{
+		ID:    "s1",
+		Model: "claude-opus-5",
+		Body:  []byte(`{"model":"claude-opus-5","max_tokens":32000,"stream":true,"messages":[{"role":"user","content":"hi"}]}`),
+		Headers: http.Header{
+			"Authorization":  []string{"Bearer cpa-key"},
+			"Anthropic-Beta": []string{"prompt-caching-2024-07-31"},
+		},
+	}, 1, "http://127.0.0.1:8317/v1/messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotURL != "http://127.0.0.1:8317/v1/messages" {
+		t.Fatalf("url=%q", gotURL)
+	}
+	if gotKeep != "1" || gotAuth != "Bearer cpa-key" || gotBeta != "prompt-caching-2024-07-31" {
+		t.Fatalf("headers keep=%q auth=%q beta=%q", gotKeep, gotAuth, gotBeta)
+	}
+	if !strings.Contains(string(gotBody), `"max_tokens":1`) {
+		t.Fatalf("body=%s", gotBody)
+	}
+	if strings.Contains(string(gotBody), `"stream":true`) {
+		t.Fatal("stream should be false")
+	}
+}
+
+func TestPingSessionRejectsNonOK(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	orig := pingDo
+	pingDo = func(url string, headers http.Header, body []byte) (int, []byte, error) {
+		return http.StatusUnauthorized, []byte(`{"error":{"message":"missing key"}}`), nil
+	}
+	t.Cleanup(func() { pingDo = orig })
+	err := pingSession(session{
+		Body: []byte(`{"model":"claude-opus-5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`),
+	}, 1, defaultMessagesURL)
+	if err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestIsCompactRequest(t *testing.T) {
+	cont := claudeBody("This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:", "sys")
+	if !isCompactRequest(nil, cont) {
+		t.Fatal("post-compact continuation should match")
+	}
+	summary := []byte(`{"model":"claude-opus-5","max_tokens":64000,"stream":true,"messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"ok"},{"role":"user","content":"CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\nYour task is to create a detailed summary of the conversation so far\nWrite an <analysis> block followed by a <summary> block"}]}`)
+	if !isCompactRequest(nil, summary) {
+		t.Fatal("compact summarization prompt should match")
+	}
+	api := []byte(`{"model":"claude-opus-5","max_tokens":1024,"messages":[{"role":"user","content":"hi"}],"context_management":{"edits":[{"type":"compact_20260112"}]}}`)
+	if !isCompactRequest(nil, api) {
+		t.Fatal("compact API edit should match")
+	}
+	beta := http.Header{"Anthropic-Beta": []string{"prompt-caching-2024-07-31,compact-2026-01-12"}}
+	if !isCompactRequest(beta, claudeBody("普通一问", "sys")) {
+		t.Fatal("compact beta header should match")
+	}
+	if isCompactRequest(nil, claudeBody("How does /compact work?", "sys")) {
+		t.Fatal("talking about compact should not match")
 	}
 }

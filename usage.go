@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -59,10 +60,10 @@ type budgetSnapshot struct {
 	KeepaliveRemain int64
 	ChatBlocked     bool
 	ChatOverLimit   bool
-	ChatStopFired   bool
 	KeepalivePaused bool
 	PauseReason     string
 	LimitHitUntil   time.Time
+	ResetAt         time.Time
 	GuardChat       bool
 	UsedPercent     float64
 	UsedKnown       bool
@@ -83,7 +84,7 @@ var (
 	unitsPerUtil    float64 // weighted units that move utilization by 1.0 (100%)
 	quotaSamples    []quotaSample
 	fiveHourReset   time.Time
-	chatStopFired   bool // already delivered the one-shot CPA chat stop for this over-limit stretch
+	quotaProbeUsed  bool // one chat probe after both chat+keepalive stopped with no Reset time
 )
 
 func isKeepaliveRequest(headers http.Header) bool {
@@ -348,7 +349,7 @@ func recordUsage(rec pluginapi.UsageRecord) {
 		}
 		blockAt := float64(stopPercentFromReserve(cfg.ReservePercent)) / 100
 		if sample.Util5h < blockAt {
-			chatStopFired = false
+			quotaProbeUsed = false
 		}
 		if sample.Status5h == "rejected" || sample.Util5h >= 0.995 {
 			until := now.Add(20 * time.Minute)
@@ -416,7 +417,7 @@ func expireFiveHourLocked(now time.Time) {
 	unitsPerUtil = 0
 	lastCalibOK = false
 	lastCalibUtil = 0
-	chatStopFired = false
+	quotaProbeUsed = false
 }
 
 func chatPredictedOverLocked(model string, headers http.Header, body []byte, blockAt float64) bool {
@@ -431,28 +432,38 @@ func chatPredictedOverLocked(model string, headers http.Header, body []byte, blo
 }
 
 // shouldBlockChat is local: it never contacts Anthropic. Crossing the stop
-// line (or a request predicted to land past it) intercepts once so a fat
-// turn cannot punch through 100%. The next chat is allowed through so a
-// refreshed 5h window can be observed; after that, quota headers decide
-// whether to arm another one-shot stop.
+// line (or a request predicted to land past it) keeps blocking chat until
+// utilization drops or the 5h Reset time passes. Compact / /compact is
+// allowed through. If chat and keepalive are both paused and no Reset time
+// is known, one chat probe is allowed so the window cannot deadlock.
 func shouldBlockChat(now time.Time, model string, headers http.Header, body []byte) bool {
+	if isCompactRequest(headers, body) {
+		return false
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	snap := currentBudgetLocked(now)
 	if !snap.GuardChat {
-		chatStopFired = false
+		quotaProbeUsed = false
 		return false
 	}
 	over := snap.ChatOverLimit || chatPredictedOverLocked(model, headers, body, float64(snap.BlockAtPercent)/100)
 	if !over {
-		chatStopFired = false
+		quotaProbeUsed = false
 		return false
 	}
-	if chatStopFired {
+	if shouldAllowQuotaProbeLocked(snap) {
+		quotaProbeUsed = true
 		return false
 	}
-	chatStopFired = true
 	return true
+}
+
+func shouldAllowQuotaProbeLocked(snap budgetSnapshot) bool {
+	if quotaProbeUsed || !snap.ChatOverLimit || !snap.KeepalivePaused {
+		return false
+	}
+	return fiveHourReset.IsZero()
 }
 
 func noteUsageFailure(rec pluginapi.UsageRecord) {
@@ -546,6 +557,7 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 		KeepaliveUnits: keep,
 		GuardChat:      cfg.guardChat(),
 		LimitHitUntil:  limitHitUntil,
+		ResetAt:        fiveHourReset,
 		BlockAtPercent: 100 - reserve,
 	}
 	blockAt := float64(snap.BlockAtPercent) / 100
@@ -589,11 +601,8 @@ func currentBudgetLocked(now time.Time) budgetSnapshot {
 	} else {
 		snap.KeepaliveCap = floor
 	}
-	if snap.ChatOverLimit {
-		snap.ChatStopFired = chatStopFired
-		snap.ChatBlocked = !chatStopFired
-	} else {
-		chatStopFired = false
+	if snap.ChatOverLimit && snap.GuardChat {
+		snap.ChatBlocked = true
 	}
 	snap.KeepaliveRemain = snap.KeepaliveCap - keep
 	if snap.KeepaliveRemain < 0 {
@@ -641,7 +650,13 @@ func pickDueWithinBudget(due []session, remain int64) []session {
 }
 
 func chatGuardResponse() pluginapi.RequestInterceptResponse {
-	msg := "CPA 对话先停这一发，避免打穿 5 小时额度。下一发会放行；若额度已刷新就会继续，仍超停线再拦一次。"
+	mu.Lock()
+	reset := fiveHourReset
+	mu.Unlock()
+	msg := "CPA 对话已停在停线，等到 5 小时额度刷新或用量掉回停线以下。/compact 不受影响。"
+	if !reset.IsZero() {
+		msg = fmt.Sprintf("CPA 对话已停在停线，等到 5 小时额度刷新（%s）或用量掉回停线以下。/compact 不受影响。", reset.UTC().Format("2006-01-02 15:04:05 UTC"))
+	}
 	body, _ := json.Marshal(map[string]any{
 		"type": "error",
 		"error": map[string]string{

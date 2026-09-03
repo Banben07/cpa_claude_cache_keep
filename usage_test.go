@@ -299,6 +299,27 @@ func TestGuardChatIntercept(t *testing.T) {
 	}
 }
 
+func TestGuardChatAllowsCompact(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordFiveHour("0.96", "")
+	cont := claudeBody("This session is being continued from a previous conversation that ran out of context. The conversation is summarized below:", "sys")
+	out := interceptChat(t, cont)
+	if out.Terminate {
+		t.Fatal("compact continuation must not be quota-blocked")
+	}
+	if shouldBlockChat(time.Now(), "claude-opus-5", nil, cont) {
+		t.Fatal("shouldBlockChat should skip compact")
+	}
+	summary := []byte(`{"model":"claude-opus-5","max_tokens":64000,"messages":[{"role":"user","content":"hi"},{"role":"user","content":"CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.\nYour task is to create a detailed summary of the conversation so far\nWrite an <analysis> block followed by a <summary> block"}]}`)
+	if interceptChat(t, summary).Terminate {
+		t.Fatal("/compact summarization must not be quota-blocked")
+	}
+	normal := interceptChat(t, claudeBody("别把额度用光", "sys"))
+	if !normal.Terminate || normal.StatusCode != 429 {
+		t.Fatalf("normal chat should still stop, terminate=%v status=%d", normal.Terminate, normal.StatusCode)
+	}
+}
 
 func interceptChat(t *testing.T, body []byte) pluginapi.RequestInterceptResponse {
 	t.Helper()
@@ -338,43 +359,89 @@ func recordFiveHour(util string, reset string) {
 	})
 }
 
-func TestChatStopIsOneShotThenAllows(t *testing.T) {
+func TestChatStopSticksUntilUtilDrops(t *testing.T) {
 	resetSessionsForTest()
 	t.Cleanup(resetSessionsForTest)
 	recordFiveHour("0.96", "")
-	body := claudeBody("下一发不该再拦", "sys")
+	body := claudeBody("停线后继续拦", "sys")
 	first := interceptChat(t, body)
 	if !first.Terminate || first.StatusCode != 429 {
 		t.Fatalf("first terminate=%v status=%d", first.Terminate, first.StatusCode)
 	}
-	second := interceptChat(t, body)
-	if second.Terminate {
-		t.Fatal("second chat after one-shot stop must be allowed through")
+	if !strings.Contains(string(first.ResponseBody), "等到") || !strings.Contains(string(first.ResponseBody), "/compact") {
+		t.Fatalf("guard message=%s", first.ResponseBody)
+	}
+	if !interceptChat(t, body).Terminate {
+		t.Fatal("second chat must stay blocked while over the stop line")
 	}
 	snap := currentBudget(time.Now())
-	if snap.ChatBlocked {
-		t.Fatal("status must not keep showing blocked after the one-shot")
-	}
-	if !snap.ChatStopFired || !snap.ChatOverLimit {
-		t.Fatalf("over=%v fired=%v", snap.ChatOverLimit, snap.ChatStopFired)
-	}
-}
-
-func TestChatStopRearmsAfterUtilDrops(t *testing.T) {
-	resetSessionsForTest()
-	t.Cleanup(resetSessionsForTest)
-	recordFiveHour("0.96", "")
-	body := claudeBody("额度回落后再停", "sys")
-	if out := interceptChat(t, body); !out.Terminate {
-		t.Fatal("expected first stop")
+	if !snap.ChatBlocked || !snap.ChatOverLimit {
+		t.Fatalf("status should stay blocked over=%v blocked=%v", snap.ChatOverLimit, snap.ChatBlocked)
 	}
 	recordFiveHour("0.20", "")
-	if snap := currentBudget(time.Now()); snap.ChatBlocked || snap.ChatStopFired {
-		t.Fatalf("refreshed quota should clear stop blocked=%v fired=%v", snap.ChatBlocked, snap.ChatStopFired)
+	if snap := currentBudget(time.Now()); snap.ChatBlocked {
+		t.Fatal("util drop should unblock chat")
+	}
+	if interceptChat(t, body).Terminate {
+		t.Fatal("chat must pass after util drops below the stop line")
 	}
 	recordFiveHour("0.97", "")
 	if out := interceptChat(t, body); !out.Terminate || out.StatusCode != 429 {
-		t.Fatal("crossing the stop line again should one-shot stop")
+		t.Fatal("crossing the stop line again should block")
+	}
+}
+
+func TestKeepaliveUtilDropUnblocksChat(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordFiveHour("0.96", "")
+	body := claudeBody("保活用量掉下来", "sys")
+	if out := interceptChat(t, body); !out.Terminate {
+		t.Fatal("expected stop while over")
+	}
+	mu.Lock()
+	keepaliveActive = 1
+	mu.Unlock()
+	recordFiveHour("0.40", "")
+	mu.Lock()
+	keepaliveActive = 0
+	mu.Unlock()
+	if snap := currentBudget(time.Now()); snap.ChatBlocked {
+		t.Fatal("keepalive header drop should unblock chat")
+	}
+	if interceptChat(t, body).Terminate {
+		t.Fatal("chat must pass after keepalive reports lower util")
+	}
+}
+
+func TestQuotaProbeWhenChatAndKeepaliveStopped(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	recordFiveHour("0.996", "")
+	body := claudeBody("没有刷新时间时探一次", "sys")
+	if out := interceptChat(t, body); out.Terminate {
+		t.Fatal("one probe chat must pass when both are paused and reset is unknown")
+	}
+	if out := interceptChat(t, body); !out.Terminate {
+		t.Fatal("second chat after probe must stay blocked")
+	}
+}
+
+func TestNoQuotaProbeWhenResetKnown(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	future := fmt.Sprintf("%d", time.Now().Add(2*time.Hour).Unix())
+	recordFiveHour("0.996", future)
+	body := claudeBody("有刷新时间就不探", "sys")
+	if out := interceptChat(t, body); !out.Terminate {
+		t.Fatal("must not probe when a 5h reset time is already known")
+	}
+	now := time.Now()
+	if !shouldBlockChat(now, "claude-opus-5", nil, body) {
+		t.Fatal("still blocked before reset")
+	}
+	if shouldBlockChat(now.Add(3*time.Hour), "claude-opus-5", nil, body) {
+		t.Fatal("must unblock after reset time")
 	}
 }
 
@@ -450,6 +517,26 @@ func TestRenderStatusHTMLIncludesBudget(t *testing.T) {
 	}
 	if strings.Contains(html, "对话用到 100% 才停") {
 		t.Fatal("98/100 is too thin; default must stop earlier")
+	}
+	if strings.Contains(html, "下一发会放行") {
+		t.Fatal("sticky stop must not promise the next chat")
+	}
+}
+
+func TestStatusShowsFiveHourReset(t *testing.T) {
+	resetSessionsForTest()
+	t.Cleanup(resetSessionsForTest)
+	future := fmt.Sprintf("%d", time.Now().Add(90*time.Minute).Unix())
+	recordFiveHour("0.96", future)
+	html := renderStatusHTML()
+	if !strings.Contains(html, "刷新") {
+		t.Fatalf("missing reset on 5h card: %s", html)
+	}
+	if !strings.Contains(html, "对话已限流") {
+		t.Fatalf("should show sticky block: %s", html)
+	}
+	if strings.Contains(html, "下一发会放行") {
+		t.Fatal("blocked banner must stay sticky")
 	}
 }
 

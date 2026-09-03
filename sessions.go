@@ -8,25 +8,25 @@ import (
 )
 
 type session struct {
-	ID            string
-	Label         string
-	CustomLabel   bool
-	Enabled       bool
-	Model         string
-	SourceFormat  string
-	ToFormat      string
-	Headers       http.Header
-	Body          []byte
-	SavedAt       time.Time
-	LastSeen      time.Time
-	LastPingAt    time.Time
-	LastPingError string
+	ID                 string
+	Label              string
+	CustomLabel        bool
+	Enabled            bool
+	Model              string
+	SourceFormat       string
+	ToFormat           string
+	Headers            http.Header
+	Body               []byte
+	SavedAt            time.Time
+	LastSeen           time.Time
+	LastPingAt         time.Time
+	LastPingError      string
 	LastChatUnits      int64
 	LastPingUnits      int64
 	LastPingCacheRead  int64
 	LastPingCacheWrite int64
 	PingExpensive      bool
-	Info          bodyInfo
+	Info               bodyInfo
 }
 
 func upsertSession(model, sourceFormat, toFormat string, headers http.Header, body []byte) {
@@ -204,6 +204,16 @@ func dueSnapshots(now time.Time, interval time.Duration) []session {
 	return out
 }
 
+func cloneSessionByID(id string) (session, bool) {
+	mu.Lock()
+	defer mu.Unlock()
+	item, ok := sessions[id]
+	if !ok || item == nil {
+		return session{}, false
+	}
+	return cloneSession(item), true
+}
+
 func listSessions() []session {
 	mu.Lock()
 	defer mu.Unlock()
@@ -317,7 +327,7 @@ func resetSessionsForTest() {
 	unitsPerUtil = 0
 	quotaSamples = nil
 	fiveHourReset = time.Time{}
-	chatStopFired = false
+	quotaProbeUsed = false
 	subagentSkipped = 0
 	lastSubagentAt = time.Time{}
 	lastSubagentKind = ""
